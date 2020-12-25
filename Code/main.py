@@ -5,7 +5,7 @@ import time
 import math
 import enum
 import threading
-import imutils
+#import imutils
 from matplotlib import pyplot as plt
 import numpy as np
 from typing import List, Tuple
@@ -13,22 +13,47 @@ from typing import List, Tuple
 print('Program started')
 # close all opened connections
 sim.simxFinish(-1)
+while True:
+    clientID = sim.simxStart('127.0.0.1', 19999, True, True, 5000, 5)
+    if clientID > -1:
+        break
+    else:
+        time.sleep(0.2)
+
+
+
 # Connect to CoppeliaSim
-clientID = sim.simxStart('127.0.0.1', 19999, True, True, 5000, 5)
+
 
 if clientID == -1:
     raise Exception("Failed to connect to remote API server")
 
 print('Connected to remote API server')
 
+# _, bot = sim.simxGetObjectHandle(
+#     clientID, "Pioneer_p3dx", sim.simx_opmode_oneshot_wait)
+# _, left_motor = sim.simxGetObjectHandle(
+#     clientID, "Pioneer_p3dx_leftMotor", sim.simx_opmode_oneshot_wait)
+# _, right_motor = sim.simxGetObjectHandle(
+#     clientID, "Pioneer_p3dx_rightMotor", sim.simx_opmode_oneshot_wait)
+# _, vision_sensor = sim.simxGetObjectHandle(
+#     clientID, "Vision_sensor", sim.simx_opmode_oneshot_wait)
 _, bot = sim.simxGetObjectHandle(
-    clientID, "Pioneer_p3dx", sim.simx_opmode_oneshot_wait)
+    clientID, "Pioneer_p3dx", sim.simx_opmode_blocking)
 _, left_motor = sim.simxGetObjectHandle(
-    clientID, "Pioneer_p3dx_leftMotor", sim.simx_opmode_oneshot_wait)
+    clientID, "Pioneer_p3dx_leftMotor", sim.simx_opmode_blocking)
 _, right_motor = sim.simxGetObjectHandle(
-    clientID, "Pioneer_p3dx_rightMotor", sim.simx_opmode_oneshot_wait)
+    clientID, "Pioneer_p3dx_rightMotor", sim.simx_opmode_blocking)
 _, vision_sensor = sim.simxGetObjectHandle(
-    clientID, "Vision_sensor", sim.simx_opmode_oneshot_wait)
+    clientID, "Vision_sensor", sim.simx_opmode_blocking)
+
+tstep = 0.005
+sim.simxSetFloatingParameter(clientID, sim.sim_floatparam_simulation_time_step, tstep, sim.simx_opmode_oneshot)
+sim.simxSynchronous(clientID, True)
+sim.simxStartSimulation(clientID, sim.simx_opmode_oneshot)
+
+sim.simxSynchronousTrigger(clientID)
+
 wheel_diameter = 0.195
 wheel_radius = wheel_diameter / 2
 wheel_distance = 0.381  # distance(leftWheel, rightWheel)
@@ -76,6 +101,8 @@ def move(v, w, w_unit: wUnit):
     """
     v_l = v - w * center_distance
     v_r = v + w * center_distance
+    v_l = 5
+    v_r = 5
     if w_unit == wUnit.rad:
         w_l = np.rad2deg(v_l / wheel_radius)
         w_r = np.rad2deg(v_r / wheel_radius)
@@ -84,9 +111,10 @@ def move(v, w, w_unit: wUnit):
         w_r = v_r / wheel_radius
     print("v_l = ", v_l, " v_r = ", v_r, " w_l = ", w_l, " w_r = ", w_r)
     sim.simxSetJointTargetVelocity(
-        clientID, left_motor, w_l, sim.simx_opmode_oneshot)
+        clientID, right_motor, 10, sim.simx_opmode_streaming)
     sim.simxSetJointTargetVelocity(
-        clientID, right_motor, w_r, sim.simx_opmode_oneshot)
+        clientID, left_motor, 10, sim.simx_opmode_streaming)
+
 
 # def smoothMove(v, w, w_unit: wUnit):
 #     """
@@ -110,11 +138,12 @@ def world_coordinate(coord: Tuple[float, float]):
 
 
 def handleGraph(img):
-    img = np.flip(img, 0)
-    # cv2.imshow('image', img)
+    #img = np.flip(img, 0)
+    #cv2.imshow('image', img)
 
     # Convert image to greyscale.
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # gray = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     # Process image using Gaussian blur.
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
     # Process image using Color Threshold.
@@ -132,6 +161,35 @@ def handleGraph(img):
     return mask
 
 
+def handleGraph2(img):
+    #img = np.flip(img, 0)
+    #cv2.imshow('image', img)
+
+    # Convert image to greyscale.
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    #gray = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    return gray
+    # Process image using Gaussian blur.
+    # 为何要模糊，有什么考量？
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    return blur
+    # Process image using Color Threshold.
+    _, thresh = cv2.threshold(blur, 60, 255, cv2.THRESH_BINARY_INV)
+
+    # cv2.imshow('thresh', thresh)
+    # Erode and dilate to remove accidental line detections.
+    mask = cv2.erode(thresh, None, iterations=1)
+
+    mask = cv2.dilate(mask, None, iterations=8)
+
+    # mask = cv2.dilate(thresh, None, iterations=2)
+    # cv2.imshow('mask', mask)
+    # # Find the contours of the image.
+    # contours = cv2.findContours(mask.copy(), 1, cv2.CHAIN_APPROX_NONE)
+    # # Use imutils to unpack contours.
+    # contours = imutils.grab_contours(contours)
+    return mask
+
 def getImage(sensor):
     """Retrieve an image from Vision Sensor.
 
@@ -144,6 +202,7 @@ def getImage(sensor):
             clientID, sensor, 0, sim.simx_opmode_buffer)
         if err == sim.simx_return_ok:
             img = np.array(image, dtype=np.uint8)
+            #print(img)
             img.resize([resolution[1], resolution[0], 3])
 
             # Convert image to greyscale.
@@ -170,10 +229,11 @@ def getImage(sensor):
         else:
             print("in getImage: err = ", err)
 
-
+# img 480*640 #to be seen
 def isRoad(img, row, col):
     return img[row][col] >= 128
-
+def isLine(img, row, col):
+    return img[row][col] == 1 or img[row][col] == 2
 
 def getNearestCol(cur_col, mid,  nearest_len, nearest_col):
     cur_len = abs(cur_col - mid)
@@ -185,6 +245,7 @@ def getNearestCol(cur_col, mid,  nearest_len, nearest_col):
 def calIndicator(img):
     # print("img = ", img)
     rows, cols = img.shape[0], img.shape[1]
+    # print("imgShape: ", rows, cols)
     mid = cols / 2
     inf = cols * 2
 
@@ -194,11 +255,14 @@ def calIndicator(img):
     for i in range(rows):
         nearest_len = inf
         nearest_col = None
+        # 该循环找到了距离mid_col最近的黑点
         for j in range(cols):
-            if isRoad(img, i, j) and (j == 0 or not isRoad(img, i, j - 1)):
+            #if isRoad(img, i, j) and (j == 0 or not isRoad(img, i, j - 1)):
+            if isLine(img, i, j):
                 nearest_len, nearest_col = getNearestCol(
                     j, mid, nearest_len, nearest_col)
-            elif isRoad(img, i, j) and (j == cols - 1 or not isRoad(img, i, j + 1)):
+            #elif isRoad(img, i, j) and (j == cols - 1 or not isRoad(img, i, j + 1)):
+            elif isLine(img, i, j):
                 nearest_len, nearest_col = getNearestCol(
                     j, mid, nearest_len, nearest_col)
         if nearest_len == inf:
@@ -209,7 +273,7 @@ def calIndicator(img):
 
     if sum_weight == 0:
         print("indicator = None")
-        return None
+        return 0
 
     indicator /= sum_weight
 
@@ -247,31 +311,46 @@ def main():
     # return 0
     # getImage(vision_sensor)
 
-    pid_v = pidController(kp=0.1, ki=0.000001, kd=-0.000001)
-    pid_w = pidController(kp=-1, ki=0.05, kd=0.1)
-
+    # velocity and angular velocity
+    pid_v = pidController(kp=1, ki=0.00000, kd=-0.00000)
+    #pid_w = pidController(kp=0.01, ki=0.05, kd=0.1)
+    pid_w = pidController(kp=0, ki=0, kd=0)
     ############### Get Image ###############
     err, resolution, image = sim.simxGetVisionSensorImage(
         clientID, vision_sensor, 0, sim.simx_opmode_streaming)
+    flag = 1
+
     while (sim.simxGetConnectionId(clientID) != -1):
         err, resolution, image = sim.simxGetVisionSensorImage(
             clientID, vision_sensor, 0, sim.simx_opmode_buffer)
+
+        _, lv, av = sim.simxGetObjectVelocity(clientID, bot, sim.simx_opmode_oneshot)
+        print("lv: ", lv)
+        print("av: ", av)
+
         if err == sim.simx_return_ok:
             img = np.array(image, dtype=np.uint8)
+            #print("visionSensor: ", img.shape)
             img.resize([resolution[1], resolution[0], 3])
-            img = handleGraph(img)
+            # plt.imshow(img)
+            # plt.show()
+            # 转换成480*640*3的图像
+            img = handleGraph2(img)
+            # plt.imshow(img)
+            # plt.show()
             indicator = calIndicator(img)
             if indicator is None:
                 continue
 
             # indicator = indicator / 640
-
+            indicator = 0
             v = pid_v(1 - abs(indicator) / 320)
             # v = 1
             w = pid_w(indicator / 320)
             print("v = ", v, " w = ", w)
             move(v, w, wUnit.deg)
-
+            # plt.imshow(img)
+            # plt.show()
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
             # break
