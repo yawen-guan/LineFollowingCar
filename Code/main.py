@@ -179,7 +179,7 @@ def azimuthAngle(pos1: Tuple, pos2: Tuple):
     return np.rad2deg(angle) * (-1.0)
 
 
-road_section_weight={
+section_dist_weight = {
     0: 1,  # [0, 60)
     1: 2,  # [60, 120)
     2: 4,  # [120, 180)
@@ -190,44 +190,61 @@ road_section_weight={
     7: 16,  # [420, 480)
 }
 
+section_theta_weight = {
+    0: 1,  # [0, 60)
+    1: 1,  # [60, 120)
+    2: 1,  # [120, 180)
+    3: 1,  # [180, 240)
+    4: 2,  # [240, 300)
+    5: 2,  # [300, 360)
+    6: 2,  # [360, 420)
+    7: 2,  # [420, 480)
+}
+
 
 def calIndicator(img):
-    rows, cols=img.shape[0], img.shape[1]
-    mid=cols / 2
-    # car_pos = (rows - 1, mid - 1)
+    rows, cols = img.shape[0], img.shape[1]
+    mid = cols / 2
+    car_pos = (rows - 1, mid - 1)
 
-    indicator_dist=0
-    indicator_theta=0
-    weight_sum=0
+    indicator_dist = 0
+    indicator_theta = 0
+    dist_weight_sum = 0
+    theta_weight_sum = 0
 
-    valid_count=0
-    dist_sum=0
-    road_mid_sum=0
+    valid_count = 0
+    dist_sum = 0
+    road_mid_sum = 0
     for i in range(rows):
         if i != 0 and (i % 60) == 0:
             if valid_count != 0:
-                weight=road_section_weight[(i - 1) // 60]
-                dist=(dist_sum / valid_count)
-                indicator_dist += dist * weight
+                dist = (dist_sum / valid_count)
+                dist_weight = section_dist_weight[(i - 1) // 60]
+                indicator_dist += dist * dist_weight
+                dist_weight_sum += dist_weight
 
-                car_pos=(i, mid)
-                target_pos=(i - 30, (road_mid_sum / valid_count))
-                theta=azimuthAngle(car_pos, target_pos)
-                indicator_theta += theta * weight
+                # car_pos = (i - 1, mid - 1)
+                target_pos = (i - 30 - 1, (road_mid_sum / valid_count))
+                theta = azimuthAngle(car_pos, target_pos)
+                theta_weight = section_theta_weight[(i - 1) // 60]
+                indicator_theta += theta * theta_weight
+                theta_weight_sum += theta_weight
+
                 # print("section ", (i - 1) // 60,
                 #       " dist_sum = ", dist_sum,
                 #       " valid_count = ", valid_count,
                 #       " dist = ", dist,
                 #       " theta = ", theta)
-                weight_sum += weight
-            valid_count=0
-            dist_sum=0
 
-        road_cols=[]
+            valid_count = 0
+            dist_sum = 0
+            road_mid_sum = 0
+
+        road_cols = []
         for j in range(cols):
             if isRoad(img, i, j):
                 road_cols.append(j)
-        road_mid=getRoadMid(road_cols)
+        road_mid = getRoadMid(road_cols)
         if road_mid is None:
             continue
 
@@ -235,13 +252,13 @@ def calIndicator(img):
         dist_sum += road_mid - mid
         road_mid_sum += road_mid
 
-    if weight_sum == 0:
-        print("indicator_dist = None")
+    if dist_weight_sum == 0 or theta_weight_sum == 0:
+        print("indicator_dist=None, indicator_theta=None")
         return None, None
-    indicator_dist /= weight_sum
-    indicator_theta /= weight_sum
-    print("indicator_dist = ", indicator_dist)
-    print("indicator_theta = ", indicator_theta)
+    indicator_dist /= dist_weight_sum
+    indicator_theta /= theta_weight_sum
+    print("indicator_dist = ", indicator_dist,
+          ", indicator_theta = ", indicator_theta)
     return indicator_dist, indicator_theta
 
 
@@ -253,17 +270,17 @@ def pidController(kp: float, ki: float, kd: float):
     :param kd: the derivative factor
     :return: a function that processes the error
     """
-    prev_error=0
-    integral=0
-    derivative=0
+    prev_error = 0
+    integral = 0
+    derivative = 0
 
     def pid(error: float):
         nonlocal prev_error
         nonlocal integral
         nonlocal derivative
-        integral=integral + error
-        derivative=error - prev_error
-        prev_error=error
+        integral = integral + error
+        derivative = error - prev_error
+        prev_error = error
         return kp * error + ki * integral + kd * derivative
 
     return pid
@@ -279,26 +296,28 @@ def main():
     # return 0
     # getImage(vision_sensor)
 
-    pid_v=pidController(kp=0.1, ki=0, kd=0)
-    pid_w=pidController(kp=0.001, ki=0, kd=0.001)
+    pid_v = pidController(kp=0.1, ki=0, kd=0)
+    pid_w = pidController(kp=0.01, ki=0, kd=0.001)
 
     ############### Get Image ###############
-    err, resolution, image=sim.simxGetVisionSensorImage(
+    err, resolution, image = sim.simxGetVisionSensorImage(
         clientID, vision_sensor, 0, sim.simx_opmode_streaming)
     while (sim.simxGetConnectionId(clientID) != -1):
-        err, resolution, image=sim.simxGetVisionSensorImage(
+        err, resolution, image = sim.simxGetVisionSensorImage(
             clientID, vision_sensor, 0, sim.simx_opmode_buffer)
         if err == sim.simx_return_ok:
-            img=np.array(image, dtype=np.uint8)
+            img = np.array(image, dtype=np.uint8)
             img.resize([resolution[1], resolution[0], 3])
-            img=handleGraph(img)
-            indicator_dist, indicator_theta=calIndicator(img)
+            img = handleGraph(img)
+            indicator_dist, indicator_theta = calIndicator(img)
             if indicator_dist is None or indicator_theta is None:
                 continue
 
+            # break
+
             # v = pid_v(1.0 - indicator_dist / 320)
-            v=0.1
-            w=pid_w(indicator_theta)
+            v = 0.1
+            w = pid_w(indicator_theta)
             print("v = ", v, " w = ", w)
             move(v, w, wUnit.deg)
 
