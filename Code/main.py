@@ -115,21 +115,27 @@ def handleGraph(img):
 
     # Convert image to greyscale.
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # cv2.imshow('gray', gray)
+
     # Process image using Gaussian blur.
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    # cv2.imshow('blur', blur)
+
     # Process image using Color Threshold.
     _, thresh = cv2.threshold(blur, 60, 255, cv2.THRESH_BINARY_INV)
     # cv2.imshow('thresh', thresh)
+
     # Erode and dilate to remove accidental line detections.
     mask = cv2.erode(thresh, None, iterations=1)
-    mask = cv2.dilate(mask, None, iterations=8)
-    # mask = cv2.dilate(thresh, None, iterations=2)
-    # cv2.imshow('mask', mask)
-    # # Find the contours of the image.
-    # contours = cv2.findContours(mask.copy(), 1, cv2.CHAIN_APPROX_NONE)
-    # # Use imutils to unpack contours.
-    # contours = imutils.grab_contours(contours)
-    return mask
+    # cv2.imshow('mask_1', mask)
+    mask = cv2.dilate(mask, None, iterations=3)
+    # cv2.imshow('mask_2', mask)
+
+    contour_img = cv2.Canny(mask, 50, 150)
+
+    cv2.imshow('contour_img', contour_img)
+
+    return contour_img
 
 
 def getImage(sensor):
@@ -182,7 +188,7 @@ def getNearestCol(cur_col, mid,  nearest_len, nearest_col):
     return nearest_len, nearest_col
 
 
-def calIndicator(img):
+def calIndicator_0(img):
     # print("img = ", img)
     rows, cols = img.shape[0], img.shape[1]
     mid = cols / 2
@@ -218,6 +224,128 @@ def calIndicator(img):
     return indicator
 
 
+def getMin(a, b):
+    if a is None:
+        return b
+    elif b is None:
+        return a
+    return min(a, b)
+
+
+def getRoadMid(road_cols):
+    width = None
+    road_mid = None
+    for i in range(len(road_cols)):
+        if i == 0:
+            continue
+        cur_width = road_cols[i] - road_cols[i - 1]
+        if cur_width < 5:
+            continue
+        if width is None or cur_width < width:
+            width = road_cols[i] - road_cols[i - 1]
+            road_mid = (road_cols[i] + road_cols[i - 1]) / 2
+    return road_mid
+
+
+def tranCoordinate(pos: Tuple):
+    return (pos[1], -pos[0])
+
+
+def azimuthAngle(pos1: Tuple, pos2: Tuple):
+    pos1, pos2 = tranCoordinate(pos1), tranCoordinate(pos2)
+    x1, y1 = pos1[0], pos1[1]
+    x2, y2 = pos2[0], pos2[1]
+    angle = 0.0
+    dx = x2 - x1
+    dy = y2 - y1
+    if x2 == x1:
+        angle = math.pi / 2.0
+        if y2 == y1:
+            angle = 0.0
+        elif y2 < y1:
+            angle = 3.0 * math.pi / 2.0
+    elif x2 > x1 and y2 > y1:
+        angle = math.atan(dx / dy)
+    elif x2 > x1 and y2 < y1:
+        angle = math.pi / 2 + math.atan(-dy / dx)
+    elif x2 < x1 and y2 < y1:
+        angle = math.pi + math.atan(dx / dy)
+    elif x2 < x1 and y2 > y1:
+        angle = 3.0 * math.pi / 2.0 + math.atan(dy / -dx)
+
+    # (-pi, pi]
+    if angle > math.pi:
+        angle -= 2.0 * math.pi
+    if angle <= -math.pi:
+        angle += 2.0 * math.pi
+
+    return np.rad2deg(angle)
+
+
+road_section_weight = {
+    0: 1,  # [0, 60)
+    1: 2,  # [60, 120)
+    2: 4,  # [120, 180)
+    3: 8,  # [180, 240)
+    4: 16,  # [240, 300)
+    5: 32,  # [300, 360)
+    6: 32,  # [360, 420)
+    7: 16,  # [420, 480)
+}
+
+
+def calIndicator_1(img):
+    rows, cols = img.shape[0], img.shape[1]
+    mid = cols / 2
+    car_pos = (rows - 1, mid - 1)
+
+    indicator_dist = 0
+    indicator_theta = 0
+    weight_sum = 0
+
+    valid_count = 0
+    dist_sum = 0
+    road_mid_sum = 0
+    for i in range(rows):
+        if i != 0 and (i % 60) == 0:
+            if valid_count != 0:
+                weight = road_section_weight[(i - 1) // 60]
+                dist = (dist_sum / valid_count)
+                indicator_dist += dist * weight
+
+                mid_pos = (i - 30, (road_mid_sum / valid_count))
+                theta = azimuthAngle(car_pos, mid_pos)
+                indicator_theta += theta * weight
+                # print("section ", (i - 1) // 60,
+                #       " dist_sum = ", dist_sum,
+                #       " valid_count = ", valid_count,
+                #       " dist = ", (dist_sum / valid_count))
+                weight_sum += weight
+            valid_count = 0
+            dist_sum = 0
+
+        road_cols = []
+        for j in range(cols):
+            if isRoad(img, i, j):
+                road_cols.append(j)
+        road_mid = getRoadMid(road_cols)
+        if road_mid is None:
+            continue
+
+        valid_count += 1
+        dist_sum += road_mid - mid
+        road_mid_sum += road_mid
+
+    if weight_sum == 0:
+        print("indicator_dist = None")
+        return None, None
+    indicator_dist /= weight_sum
+    indicator_theta /= weight_sum
+    print("indicator_dist = ", indicator_dist)
+    print("indicator_theta = ", indicator_theta)
+    return indicator_dist, indicator_theta
+
+
 def pidController(kp: float, ki: float, kd: float):
     """PID Control.
 
@@ -243,12 +371,17 @@ def pidController(kp: float, ki: float, kd: float):
 
 
 def main():
-    # move(0.1, -0.1, wUnit.deg)
+    # move(10, 0.1, wUnit.deg)
+    # while (True):
+    # pass
+    # angle = azimuthAngle(0, 0, 2, 1)
+    # print("angle = ", angle)
+    # move(10, 0, wUnit.deg)
     # return 0
     # getImage(vision_sensor)
 
-    pid_v = pidController(kp=0.1, ki=0.000001, kd=-0.000001)
-    pid_w = pidController(kp=-1, ki=0.05, kd=0.1)
+    pid_v = pidController(kp=0.1, ki=0, kd=0)
+    pid_w = pidController(kp=0.01, ki=0, kd=0.01)
 
     ############### Get Image ###############
     err, resolution, image = sim.simxGetVisionSensorImage(
@@ -260,16 +393,16 @@ def main():
             img = np.array(image, dtype=np.uint8)
             img.resize([resolution[1], resolution[0], 3])
             img = handleGraph(img)
-            indicator = calIndicator(img)
-            if indicator is None:
+            indicator_dist, indicator_theta = calIndicator_1(img)
+            if indicator_dist is None or indicator_theta is None:
                 continue
 
             # indicator = indicator / 640
 
-            v = pid_v(1 - abs(indicator) / 320)
-            # v = 1
-            w = pid_w(indicator / 320)
-            print("v = ", v, " w = ", w)
+            # v = pid_v(1.0 - indicator_dist / 320)
+            v = 0.1
+            w = pid_w(-indicator_theta)
+            # print("v = ", v, " w = ", w)
             move(v, w, wUnit.deg)
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
