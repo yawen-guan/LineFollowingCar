@@ -82,31 +82,10 @@ def move(v, w, w_unit: wUnit):
     else:
         w_l = v_l / wheel_radius
         w_r = v_r / wheel_radius
-    print("v_l = ", v_l, " v_r = ", v_r, " w_l = ", w_l, " w_r = ", w_r)
     sim.simxSetJointTargetVelocity(
         clientID, left_motor, w_l, sim.simx_opmode_oneshot)
     sim.simxSetJointTargetVelocity(
         clientID, right_motor, w_r, sim.simx_opmode_oneshot)
-
-# def smoothMove(v, w, w_unit: wUnit):
-#     """
-#     Smooth Differential Drive Movement.
-
-#     :param v: desired velocity of car, unit: m
-#     :param w: desired angular velocity of car (Relative to ICR), unit: rad or deg
-#     """
-#     while True:
-
-
-def world_coordinate(coord: Tuple[float, float]):
-    """Convert Sensor-Coordinate to World-Coordinate.
-
-    :param coord: Coordinate related to Vision Sensor
-    :return: World-Coordinate
-    """
-    k = 64 * math.sqrt(3)
-    x, y = (256 - coord[0]) / k, (coord[1] - 256) / k + 0.8
-    return x, y
 
 
 def handleGraph(img):
@@ -138,90 +117,8 @@ def handleGraph(img):
     return contour_img
 
 
-def getImage(sensor):
-    """Retrieve an image from Vision Sensor.
-
-    :return: an image represented by numpy.ndarray from Vision Sensor
-    """
-    err, resolution, image = sim.simxGetVisionSensorImage(
-        clientID, sensor, 0, sim.simx_opmode_streaming)
-    while (sim.simxGetConnectionId(clientID) != -1):
-        err, resolution, image = sim.simxGetVisionSensorImage(
-            clientID, sensor, 0, sim.simx_opmode_buffer)
-        if err == sim.simx_return_ok:
-            img = np.array(image, dtype=np.uint8)
-            img.resize([resolution[1], resolution[0], 3])
-
-            # Convert image to greyscale.
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            # Process image using Gaussian blur.
-            blur = cv2.GaussianBlur(gray, (5, 5), 0)
-            # Process image using Color Threshold.
-            _, thresh = cv2.threshold(blur, 60, 255, cv2.THRESH_BINARY_INV)
-            # cv2.imshow('thresh', thresh)
-            # Erode and dilate to remove accidental line detections.
-            mask = cv2.erode(thresh, None, iterations=1)
-            mask = cv2.dilate(mask, None, iterations=5)
-            # mask = cv2.dilate(thresh, None, iterations=2)
-            cv2.imshow('mask', mask)
-            # # Find the contours of the image.
-            # contours = cv2.findContours(mask.copy(), 1, cv2.CHAIN_APPROX_NONE)
-            # # Use imutils to unpack contours.
-            # contours = imutils.grab_contours(contours)
-            cv2.imshow('image', img)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-        elif err == sim.simx_return_novalue_flag:
-            print("in getImage: no image yet")
-        else:
-            print("in getImage: err = ", err)
-
-
 def isRoad(img, row, col):
     return img[row][col] >= 128
-
-
-def getNearestCol(cur_col, mid,  nearest_len, nearest_col):
-    cur_len = abs(cur_col - mid)
-    if cur_len < nearest_len:
-        return cur_len, cur_col
-    return nearest_len, nearest_col
-
-
-def calIndicator_0(img):
-    # print("img = ", img)
-    rows, cols = img.shape[0], img.shape[1]
-    mid = cols / 2
-    inf = cols * 2
-
-    indicator = 0
-    level_diff = 5
-    sum_weight = 0
-    for i in range(rows):
-        nearest_len = inf
-        nearest_col = None
-        for j in range(cols):
-            if isRoad(img, i, j) and (j == 0 or not isRoad(img, i, j - 1)):
-                nearest_len, nearest_col = getNearestCol(
-                    j, mid, nearest_len, nearest_col)
-            elif isRoad(img, i, j) and (j == cols - 1 or not isRoad(img, i, j + 1)):
-                nearest_len, nearest_col = getNearestCol(
-                    j, mid, nearest_len, nearest_col)
-        if nearest_len == inf:
-            continue
-        weight = (i + 1) * level_diff
-        sum_weight += weight
-        indicator += (nearest_col - mid) * weight
-
-    if sum_weight == 0:
-        print("indicator = None")
-        return None
-
-    indicator /= sum_weight
-
-    print("indicator = ", indicator)
-
-    return indicator
 
 
 def getMin(a, b):
@@ -279,10 +176,10 @@ def azimuthAngle(pos1: Tuple, pos2: Tuple):
     if angle <= -math.pi:
         angle += 2.0 * math.pi
 
-    return np.rad2deg(angle)
+    return np.rad2deg(angle) * (-1.0)
 
 
-road_section_weight = {
+road_section_weight={
     0: 1,  # [0, 60)
     1: 2,  # [60, 120)
     2: 4,  # [120, 180)
@@ -294,41 +191,43 @@ road_section_weight = {
 }
 
 
-def calIndicator_1(img):
-    rows, cols = img.shape[0], img.shape[1]
-    mid = cols / 2
-    car_pos = (rows - 1, mid - 1)
+def calIndicator(img):
+    rows, cols=img.shape[0], img.shape[1]
+    mid=cols / 2
+    # car_pos = (rows - 1, mid - 1)
 
-    indicator_dist = 0
-    indicator_theta = 0
-    weight_sum = 0
+    indicator_dist=0
+    indicator_theta=0
+    weight_sum=0
 
-    valid_count = 0
-    dist_sum = 0
-    road_mid_sum = 0
+    valid_count=0
+    dist_sum=0
+    road_mid_sum=0
     for i in range(rows):
         if i != 0 and (i % 60) == 0:
             if valid_count != 0:
-                weight = road_section_weight[(i - 1) // 60]
-                dist = (dist_sum / valid_count)
+                weight=road_section_weight[(i - 1) // 60]
+                dist=(dist_sum / valid_count)
                 indicator_dist += dist * weight
 
-                mid_pos = (i - 30, (road_mid_sum / valid_count))
-                theta = azimuthAngle(car_pos, mid_pos)
+                car_pos=(i, mid)
+                target_pos=(i - 30, (road_mid_sum / valid_count))
+                theta=azimuthAngle(car_pos, target_pos)
                 indicator_theta += theta * weight
                 # print("section ", (i - 1) // 60,
                 #       " dist_sum = ", dist_sum,
                 #       " valid_count = ", valid_count,
-                #       " dist = ", (dist_sum / valid_count))
+                #       " dist = ", dist,
+                #       " theta = ", theta)
                 weight_sum += weight
-            valid_count = 0
-            dist_sum = 0
+            valid_count=0
+            dist_sum=0
 
-        road_cols = []
+        road_cols=[]
         for j in range(cols):
             if isRoad(img, i, j):
                 road_cols.append(j)
-        road_mid = getRoadMid(road_cols)
+        road_mid=getRoadMid(road_cols)
         if road_mid is None:
             continue
 
@@ -354,17 +253,17 @@ def pidController(kp: float, ki: float, kd: float):
     :param kd: the derivative factor
     :return: a function that processes the error
     """
-    prev_error = 0
-    integral = 0
-    derivative = 0
+    prev_error=0
+    integral=0
+    derivative=0
 
     def pid(error: float):
         nonlocal prev_error
         nonlocal integral
         nonlocal derivative
-        integral = integral + error
-        derivative = error - prev_error
-        prev_error = error
+        integral=integral + error
+        derivative=error - prev_error
+        prev_error=error
         return kp * error + ki * integral + kd * derivative
 
     return pid
@@ -380,34 +279,31 @@ def main():
     # return 0
     # getImage(vision_sensor)
 
-    pid_v = pidController(kp=0.1, ki=0, kd=0)
-    pid_w = pidController(kp=0.01, ki=0, kd=0.01)
+    pid_v=pidController(kp=0.1, ki=0, kd=0)
+    pid_w=pidController(kp=0.001, ki=0, kd=0.001)
 
     ############### Get Image ###############
-    err, resolution, image = sim.simxGetVisionSensorImage(
+    err, resolution, image=sim.simxGetVisionSensorImage(
         clientID, vision_sensor, 0, sim.simx_opmode_streaming)
     while (sim.simxGetConnectionId(clientID) != -1):
-        err, resolution, image = sim.simxGetVisionSensorImage(
+        err, resolution, image=sim.simxGetVisionSensorImage(
             clientID, vision_sensor, 0, sim.simx_opmode_buffer)
         if err == sim.simx_return_ok:
-            img = np.array(image, dtype=np.uint8)
+            img=np.array(image, dtype=np.uint8)
             img.resize([resolution[1], resolution[0], 3])
-            img = handleGraph(img)
-            indicator_dist, indicator_theta = calIndicator_1(img)
+            img=handleGraph(img)
+            indicator_dist, indicator_theta=calIndicator(img)
             if indicator_dist is None or indicator_theta is None:
                 continue
 
-            # indicator = indicator / 640
-
             # v = pid_v(1.0 - indicator_dist / 320)
-            v = 0.1
-            w = pid_w(-indicator_theta)
-            # print("v = ", v, " w = ", w)
+            v=0.1
+            w=pid_w(indicator_theta)
+            print("v = ", v, " w = ", w)
             move(v, w, wUnit.deg)
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
-            # break
 
         elif err == sim.simx_return_novalue_flag:
             print("Getting image: no image yet")
