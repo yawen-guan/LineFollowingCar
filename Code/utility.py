@@ -1,5 +1,4 @@
 
-
 def checkListValue(lst, value, goal):
     cnt = 0
     for v in lst:
@@ -62,3 +61,13 @@ def getLabel(x):
         return 0
     else:
         return -1
+
+
+def findNearestV(v, weights):
+    nearest = None
+    for key in weights.keys():
+        if nearest is None or key <= nearest:
+            nearest = key
+        elif key > nearest:
+            break
+    return nearest

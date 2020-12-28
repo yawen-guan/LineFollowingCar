@@ -80,8 +80,6 @@ def move(v, w, w_unit: wUnit):
 
 def handleGraph(img):
     img = np.flip(img, 0)
-    # cv2.imwrite("./img.png", img)
-    # cv2.imshow('image', img)
 
     # Convert image to greyscale.
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -112,17 +110,13 @@ def handleGraph(img):
     trans = cv2.dilate(trans, None, iterations=1)
     # cv2.imshow('trans', trans)
 
-    # corners = cv2.goodFeaturesToTrack(trans, 25, 0.01, 10)
-    # corners = np.int0(corners)
-    # print("corners = ", corners)
-
     return trans
 
 ############# Handle Road ################
 
 
 min_road_width = 3
-max_road_width = 30
+max_road_width = 50
 road_parallel_eps = 30
 
 
@@ -151,7 +145,7 @@ def recognizeRoad(img):
     road_mids = []
     road_dists = []
     isMultiroad = False
-    isParallel = True
+    isParallel = False
     isTurn = False
     turnPoint = None
 
@@ -169,14 +163,25 @@ def recognizeRoad(img):
             isMultiroad = True
 
     if isMultiroad == True:
-        for i in range(1, rows):
-            for j in range(min(len(road_dists[0]), len(road_dists[i]))):
-                if abs(road_dists[i][j] - road_dists[0][j]) > road_parallel_eps:
+        ###### check parallel ######
+        isParallel = True
+        parallelFirst = None
+        for i in range(0, rows):
+            if len(road_dists[i]) == 0:
+                continue
+            if parallelFirst is None:
+                parallelFirst = i
+                continue
+            for j in range(min(len(road_dists[parallelFirst]), len(road_dists[i]))):
+                if abs(road_dists[i][j] - road_dists[parallelFirst][j]) > road_parallel_eps:
                     isParallel = False
                     break
             if isParallel == False:
                 break
+        if parallelFirst is None:
+            isParallel = False
 
+        ###### check turn ######
         isEmpty = False
         empty_cnt = 0
         empty_idx = -1
@@ -246,7 +251,7 @@ def getNearestRoadMid(row_road_mids):
 
 
 def getSecondNearestRoadMid(row_road_mids):
-    mid = 320
+    mid = 640 / 2
     first = None
     second = None
     for road_mid in row_road_mids:
@@ -254,6 +259,8 @@ def getSecondNearestRoadMid(row_road_mids):
             first = road_mid
         elif second is None:
             second = road_mid
+            if abs(first - mid) > abs(second - mid):
+                first, second = second, first
         elif abs(road_mid - mid) < abs(first - mid):
             first = road_mid
         elif abs(road_mid - mid) < abs(second - mid):
@@ -271,6 +278,7 @@ def calIndicator(road_mids, v):
     car_pos = (rows, cols / 2)
     global section_size
     global weights
+    v = findNearestV(v, weights)
 
     valid_count = 0
     road_mid_sum = 0
@@ -285,7 +293,7 @@ def calIndicator(road_mids, v):
 
     for i, row_road_mids in enumerate(road_mids):
         road_mid, road_mid_2 = getSecondNearestRoadMid(row_road_mids)
-        # print("road_mid = ", road_mid, ", road_mid_2 = ", road_mid_2)
+
         if road_mid is not None:
             valid_count += 1
             road_mid_sum += road_mid
@@ -353,8 +361,8 @@ def pidController(kp: float, ki: float, kd: float):
 def main():
 
     # pid_v = pidController(kp=0.3, ki=0, kd=0)
-    pid_w_5, clear_w_5 = pidController(kp=0.01, ki=0, kd=0.001)
-    pid_w_3, clear_w_3 = pidController(kp=0.012, ki=0, kd=0.006)
+    pid_w_5, clear_w_5 = pidController(kp=0.01, ki=0, kd=0.015)
+    pid_w_3, clear_w_3 = pidController(kp=0.008, ki=0, kd=0.005)  # 0.006
     pid_w_1, clear_w_1 = pidController(kp=0.005, ki=0.00, kd=0.01)
 
     ############### Initial ###############
@@ -405,7 +413,7 @@ def main():
             # 急转弯
             if inCurrentRoad == False and getMost(pre_labels["isTurn"]) == True:
                 v = 0
-                w = getTurnDirection(pre_labels, pre_size) * 0.5
+                w = getTurnDirection(pre_labels, pre_size) * 0.6
                 move(v, w, wUnit.deg)
                 print("-- v = ", v, " w = ", w)
                 continue
@@ -416,6 +424,8 @@ def main():
                 w = sum(pres["w"]) / pre_size
                 move(v, w, wUnit.deg)
                 continue
+
+            # break
 
             # if abs(indicator) < 20 and ((not isMultiroad) or (isMultiroad and isParallel)):
             #     v = 0.5
@@ -429,18 +439,17 @@ def main():
             #     v = 0.1
             #     w = pid_w_1(indicator)
 
-            # v = 0.5
-            # w = pid_w_5(indicator)
             v = 0.3
             w = pid_w_3(indicator)
-            if abs(indicator) >= 50:
-                v = 0.1
-                w = pid_w_1(indicator)
+            # v = 0.5
+            # w = pid_w_5(indicator)
+            # if abs(indicator) >= 20 or (isTurn and turnPoint[0] <= 300):
+            #     v = 0.3
+            #     w = pid_w_3(indicator)
+            # elif abs(indicator) >= 50:
+            #     v = 0.1
+            #     w = pid_w_1(indicator)
             print("v = ", v, " w = ", w)
-            # print("pres[v] = ", pres["v"])
-            # print("pres[w] = ", pres["w"])
-
-            # break
 
             move(v, w, wUnit.deg)
 
