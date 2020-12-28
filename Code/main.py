@@ -354,7 +354,7 @@ def main():
 
     # pid_v = pidController(kp=0.3, ki=0, kd=0)
     pid_w_5, clear_w_5 = pidController(kp=0.01, ki=0, kd=0.001)
-    pid_w_3, clear_w_3 = pidController(kp=0.0105, ki=0, kd=0.0055)
+    pid_w_3, clear_w_3 = pidController(kp=0.012, ki=0, kd=0.006)
     pid_w_1, clear_w_1 = pidController(kp=0.005, ki=0.00, kd=0.01)
 
     ############### Initial ###############
