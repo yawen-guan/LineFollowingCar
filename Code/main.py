@@ -80,37 +80,27 @@ def move(v, w, w_unit: wUnit):
 
 def handleGraph(img):
     img = np.flip(img, 0)
-
     # Convert image to greyscale.
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    # cv2.imshow('gray', gray)
-
     # Process image using Gaussian blur.
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    # cv2.imshow('blur', blur)
-
     # Process image using Color Threshold.
     _, thresh = cv2.threshold(blur, 60, 255, cv2.THRESH_BINARY_INV)
-    # cv2.imshow('thresh', thresh)
-
-    # Erode and dilate to remove accidental line detections.
-    mask = cv2.erode(thresh, None, iterations=1)
-    # cv2.imshow('mask_1', mask)
-    mask = cv2.dilate(mask, None, iterations=3)
-    # cv2.imshow('mask_2', mask)
-
-    contour_img = cv2.Canny(mask, 50, 150)
-
-    # cv2.imshow('contour_img', contour_img)
-
+    # Transfer perspective
     pts1 = np.float32([[0, 0], [639, 0], [0, 479], [639, 479]])
     pts2 = np.float32([[0, 110], [639, 110], [250, 479], [389, 479]])
     M = cv2.getPerspectiveTransform(pts1, pts2)
-    trans = cv2.warpPerspective(contour_img, M, (640, 480))
-    trans = cv2.dilate(trans, None, iterations=1)
-    # cv2.imshow('trans', trans)
+    trans = cv2.warpPerspective(thresh, M, (640, 480))
+    # Erode and dilate to remove accidental line detections.
+    mask = cv2.erode(trans, None, iterations=1)
+    mask = cv2.dilate(mask, None, iterations=3)
+    # Get contour
+    contour_img = cv2.Canny(mask, 50, 150)
+    # Dilate contour image
+    mask = cv2.dilate(contour_img, None, iterations=1)
 
-    return trans
+    cv2.imwrite("./img.png", mask)
+    return mask
 
 ############# Handle Road ################
 
@@ -395,13 +385,15 @@ def main():
             img = np.array(image, dtype=np.uint8)
             img.resize([resolution[1], resolution[0], 3])
             img = handleGraph(img)
-            cv2.imwrite("./img.png", img)
+            # cv2.imwrite("./img.png", img)
             road_mids, isMultiroad, isParallel, isTurn, turnPoint = recognizeRoad(
                 img)
             indicator, turnDirection, inCurrentRoad = calIndicator(
                 road_mids, v)
             print("indicator = ", indicator, " isMultiroad = ",
                   isMultiroad, " isParallel = ", isParallel, " isTurn = ", isTurn, " turnPoint = ", turnPoint, " turnDirection = ", turnDirection, " inCurrentRoad = ", inCurrentRoad)
+
+            break
 
             """
             并道： isMultiroad and isParallel
@@ -439,16 +431,16 @@ def main():
             #     v = 0.1
             #     w = pid_w_1(indicator)
 
-            v = 0.3
-            w = pid_w_3(indicator)
+            # v = 0.3
+            # w = pid_w_3(indicator)
             # v = 0.5
             # w = pid_w_5(indicator)
             # if abs(indicator) >= 20 or (isTurn and turnPoint[0] <= 300):
-            #     v = 0.3
-            #     w = pid_w_3(indicator)
-            # elif abs(indicator) >= 50:
-            #     v = 0.1
-            #     w = pid_w_1(indicator)
+            v = 0.3
+            w = pid_w_3(indicator)
+            if abs(indicator) >= 50:
+                v = 0.1
+                w = pid_w_1(indicator)
             print("v = ", v, " w = ", w)
 
             move(v, w, wUnit.deg)
