@@ -13,10 +13,8 @@ from weight import weights
 from utility import *
 
 print('Program started')
-# close all opened connections
-sim.simxFinish(-1)
-# Connect to CoppeliaSim
-clientID = sim.simxStart('127.0.0.1', 19999, True, True, 5000, 5)
+sim.simxFinish(-1)  # close all opened connections
+clientID = sim.simxStart('127.0.0.1', 19997, True, True, 5000, 5)
 
 if clientID == -1:
     raise Exception("Failed to connect to remote API server")
@@ -31,22 +29,24 @@ _, right_motor = sim.simxGetObjectHandle(
     clientID, "Pioneer_p3dx_rightMotor", sim.simx_opmode_oneshot_wait)
 _, vision_sensor = sim.simxGetObjectHandle(
     clientID, "Vision_sensor", sim.simx_opmode_oneshot_wait)
+
+
+# 设置仿真步长，为了保持API端与V-rep端相同步长
+tstep = 0.1
+sim.simxSetFloatingParameter(
+    clientID, sim.sim_floatparam_simulation_time_step, tstep, sim.simx_opmode_oneshot)
+# 打开同步模式
+sim.simxSynchronous(clientID, True)
+sim.simxStartSimulation(clientID, sim.simx_opmode_oneshot)
+
 wheel_diameter = 0.195
 wheel_radius = wheel_diameter / 2
 wheel_distance = 0.381  # distance(leftWheel, rightWheel)
 center_distance = wheel_distance / 2  # distance(centerLine, wheel)
 
+rows = 480
+cols = 640
 start_row = 108
-
-
-class wUnit(enum.Enum):
-    rad = 1
-    deg = 2
-
-
-cur_v = 0
-cur_w = 0
-cur_wUnit = wUnit.deg
 
 
 def init():
@@ -57,25 +57,27 @@ def init():
     time.sleep(1)
 
 
-def move(v, w, w_unit: wUnit):
+############ Move ###############
+
+def move(v, w):
     """
     Differential Drive Movement.
 
     :param v: desired velocity of car, unit: m
-    :param w: desired angular velocity of car (Relative to ICR), unit: rad or deg
+    :param w: desired angular velocity of car (Relative to ICR), unit: deg
     """
     v_l = v - w * center_distance
     v_r = v + w * center_distance
-    if w_unit == wUnit.rad:
-        w_l = np.rad2deg(v_l / wheel_radius)
-        w_r = np.rad2deg(v_r / wheel_radius)
-    else:
-        w_l = v_l / wheel_radius
-        w_r = v_r / wheel_radius
+
+    w_l = v_l / wheel_radius
+    w_r = v_r / wheel_radius
+
     sim.simxSetJointTargetVelocity(
         clientID, left_motor, w_l, sim.simx_opmode_oneshot)
     sim.simxSetJointTargetVelocity(
         clientID, right_motor, w_r, sim.simx_opmode_oneshot)
+
+############## Handle Graph #################
 
 
 def handleGraph(img):
@@ -99,8 +101,38 @@ def handleGraph(img):
     # Dilate contour image
     mask = cv2.dilate(contour_img, None, iterations=1)
 
-    cv2.imwrite("./img.png", mask)
+    # cv2.imwrite("../Image/img.png", mask)
     return mask
+
+################ PID Control ###################
+
+
+def pidController(kp: float, ki: float, kd: float):
+    """PID Control.
+
+    :param kp: the proportional factor
+    :param ki: the integral factor
+    :param kd: the derivative factor
+    :return: a function that processes the error
+    """
+    prev_error = 0
+    integral = 0
+    derivative = 0
+
+    def pid(error: float):
+        nonlocal prev_error
+        nonlocal integral
+        nonlocal derivative
+        integral = integral + error
+        derivative = error - prev_error
+        prev_error = error
+        return kp * error + ki * integral + kd * derivative
+
+    def clear():
+        nonlocal integral
+        integral = 0
+
+    return pid, clear
 
 ############# Handle Road ################
 
@@ -130,7 +162,6 @@ def recognizeRoad(img):
     """
     img: perspective transformed contour image
     """
-    rows, cols = img.shape[0], img.shape[1]
 
     road_mids = []
     road_dists = []
@@ -191,6 +222,17 @@ def recognizeRoad(img):
                 break
 
     return road_mids, isMultiroad, isParallel, isTurn, turnPoint
+
+
+def printRoad(road_mids):
+    x = []
+    y = []
+    for i in range(rows):
+        for j in range(len(road_mids[i])):
+            x.append(road_mids[i][j])
+            y.append(480 - i)
+    plt.plot(x, y, 'o', color='b')
+    plt.show()
 
 
 ############## Calculate indicator #################
@@ -315,36 +357,6 @@ def calIndicator(road_mids, v):
     turnDirection = getLabel(dist_sum) * (-1)  # left: +, right: -
     return indicator, turnDirection, inCurrentRoad
 
-################ PID Control ###################
-
-
-def pidController(kp: float, ki: float, kd: float):
-    """PID Control.
-
-    :param kp: the proportional factor
-    :param ki: the integral factor
-    :param kd: the derivative factor
-    :return: a function that processes the error
-    """
-    prev_error = 0
-    integral = 0
-    derivative = 0
-
-    def pid(error: float):
-        nonlocal prev_error
-        nonlocal integral
-        nonlocal derivative
-        integral = integral + error
-        derivative = error - prev_error
-        prev_error = error
-        return kp * error + ki * integral + kd * derivative
-
-    def clear():
-        nonlocal integral
-        integral = 0
-
-    return pid, clear
-
 
 ################# main function ###################
 
@@ -373,6 +385,7 @@ def main():
     }
 
     ############### Get Image ###############
+    sim.simxSynchronousTrigger(clientID)  # 让仿真走一步
     # lastCmdTime = sim.simxGetLastCmdTime(clientID)
     err, resolution, image = sim.simxGetVisionSensorImage(
         clientID, vision_sensor, 0, sim.simx_opmode_streaming)
@@ -388,12 +401,13 @@ def main():
             # cv2.imwrite("./img.png", img)
             road_mids, isMultiroad, isParallel, isTurn, turnPoint = recognizeRoad(
                 img)
+            # printRoad(road_mids)
             indicator, turnDirection, inCurrentRoad = calIndicator(
                 road_mids, v)
             print("indicator = ", indicator, " isMultiroad = ",
                   isMultiroad, " isParallel = ", isParallel, " isTurn = ", isTurn, " turnPoint = ", turnPoint, " turnDirection = ", turnDirection, " inCurrentRoad = ", inCurrentRoad)
 
-            break
+            # break
 
             """
             并道： isMultiroad and isParallel
@@ -406,15 +420,19 @@ def main():
             if inCurrentRoad == False and getMost(pre_labels["isTurn"]) == True:
                 v = 0
                 w = getTurnDirection(pre_labels, pre_size) * 0.6
-                move(v, w, wUnit.deg)
+                move(v, w)
                 print("-- v = ", v, " w = ", w)
+                sim.simxSynchronousTrigger(clientID)  # 进行下一步
+                sim.simxGetPingTime(clientID)    # 使得该仿真步走完
                 continue
 
             # 无路
             if indicator is None:
                 v = sum(pres["v"]) / pre_size
                 w = sum(pres["w"]) / pre_size
-                move(v, w, wUnit.deg)
+                move(v, w)
+                sim.simxSynchronousTrigger(clientID)  # 进行下一步
+                sim.simxGetPingTime(clientID)    # 使得该仿真步走完
                 continue
 
             # break
@@ -443,7 +461,7 @@ def main():
                 w = pid_w_1(indicator)
             print("v = ", v, " w = ", w)
 
-            move(v, w, wUnit.deg)
+            move(v, w)
 
             pres["v"][pre_idx] = v
             pres["w"][pre_idx] = w
@@ -461,6 +479,9 @@ def main():
             print("Getting image: no image yet")
         else:
             print("Gettimg image: error with code = ", err)
+
+        sim.simxSynchronousTrigger(clientID)  # 进行下一步
+        sim.simxGetPingTime(clientID)    # 使得该仿真步走完
 
 
 if __name__ == '__main__':
