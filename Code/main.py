@@ -32,7 +32,7 @@ _, vision_sensor = sim.simxGetObjectHandle(
 
 
 # 设置仿真步长，为了保持API端与V-rep端相同步长
-tstep = 0.1
+tstep = 0.01
 sim.simxSetFloatingParameter(
     clientID, sim.sim_floatparam_simulation_time_step, tstep, sim.simx_opmode_oneshot)
 # 打开同步模式
@@ -46,7 +46,7 @@ center_distance = wheel_distance / 2  # distance(centerLine, wheel)
 
 rows = 480
 cols = 640
-start_row = 108
+near_points_to_zero = {}
 
 
 def init():
@@ -80,32 +80,72 @@ def move(v, w):
 ############## Handle Graph #################
 
 
+def isPointInContours(contours, point):
+    for i, contour in enumerate(contours):
+        flag = cv2.pointPolygonTest(contour, point, False)
+        if flag == 1:
+            return True, i
+    return False, None
+
+
+def isCornerInContours(contours, corner, fills):
+    check_size = 10
+    contour_id = None
+    cnt = 0
+    for i in range(check_size):
+        flag, cur_id = isPointInContours(
+            contours, (corner[1] - i, corner[0] - i))
+        if flag == 1 and (contour_id is None or cur_id == contour_id):
+            cnt += 1
+            contour_id = cur_id
+    if cnt >= (check_size // 2) + 1 and contours[contour_id] not in fills:
+        area = cv2.contourArea(contours[contour_id])
+        if area <= rows * cols / 4:
+            fills.append(contours[contour_id])
+
+
+def fillImage(img, fills):
+    cv2.drawContours(img, fills, -1, (0, 0, 0), cv2.FILLED)
+    return img
+
+
+def handleGraphEdges(img, contours):
+    fills = []
+    isCornerInContours(contours, (10, 630), fills)
+    isCornerInContours(contours, (10, 10), fills)
+    if len(fills) > 0:
+        img = fillImage(img, fills)
+    return img
+
+
 def handleGraph(img):
     img = np.flip(img, 0)
+    # cv2.imwrite("../Images/origin.png", img)
+
     # Convert image to greyscale.
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     # Process image using Gaussian blur.
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
     # Process image using Color Threshold.
     _, thresh = cv2.threshold(blur, 60, 255, cv2.THRESH_BINARY_INV)
+
+    contours, _ = cv2.findContours(thresh, 1, cv2.CHAIN_APPROX_NONE)
+    thresh = handleGraphEdges(thresh, contours)
+    # cv2.imwrite("../Images/thresh.png", thresh)
+
     # Transfer perspective
     pts1 = np.float32([[0, 0], [639, 0], [0, 479], [639, 479]])
     pts2 = np.float32([[0, 110], [639, 110], [250, 479], [389, 479]])
     M = cv2.getPerspectiveTransform(pts1, pts2)
     trans = cv2.warpPerspective(thresh, M, (640, 480))
-    # Erode and dilate to remove accidental line detections.
-    mask = cv2.erode(trans, None, iterations=1)
-    mask = cv2.dilate(mask, None, iterations=3)
-    # Get contour
-    contour_img = cv2.Canny(mask, 50, 150)
-    # Dilate contour image
-    mask = cv2.dilate(contour_img, None, iterations=1)
+    # cv2.imwrite("../Images/trans.png", trans)
 
-    # cv2.imwrite("../Image/img.png", mask)
+    # Erode to get a line to represent road
+    mask = cv2.erode(trans, None, iterations=2)
     return mask
 
-################ PID Control ###################
 
+################ PID Control ###################
 
 def pidController(kp: float, ki: float, kd: float):
     """PID Control.
@@ -137,132 +177,37 @@ def pidController(kp: float, ki: float, kd: float):
 ############# Handle Road ################
 
 
-min_road_width = 3
-max_road_width = 50
-road_parallel_eps = 30
+def initRoad(rs):
+    for r in rs:
+        near_points_to_zero[r] = getNearPointsToZero(r)
 
 
-def isRoad(img, row, col):
-    return img[row][col] >= 128
-
-
-def getRoadMids(road_cols):
-    row_road_mids = []
-    row_road_dists = []
-    for i in range(1, len(road_cols)):
-        width = road_cols[i] - road_cols[i - 1]
-        if width >= min_road_width and width <= max_road_width:
-            row_road_mids.append((road_cols[i - 1] + road_cols[i]) / 2)
-    for i in range(1, len(row_road_mids)):
-        row_road_dists.append(row_road_mids[i] - row_road_mids[i - 1])
-    return row_road_mids, row_road_dists
-
-
-def recognizeRoad(img):
-    """
-    img: perspective transformed contour image
-    """
-
-    road_mids = []
-    road_dists = []
-    isMultiroad = False
-    isParallel = False
-    isTurn = False
-    turnPoint = None
-
-    for i in range(rows):
-        road_cols = []
-        for j in range(cols):
-            if isRoad(img, i, j):
-                road_cols.append(j)
-        # print("row = ", i, " road_cols = ", road_cols)
-        row_road_mids, row_road_dists = getRoadMids(road_cols)
-        # print("row = ", i, " row_road_mids = ", row_road_mids)
-        road_mids.append(row_road_mids)
-        road_dists.append(row_road_dists)
-        if len(row_road_dists) > 0:
-            isMultiroad = True
-
-    if isMultiroad == True:
-        ###### check parallel ######
-        isParallel = True
-        parallelFirst = None
-        for i in range(0, rows):
-            if len(road_dists[i]) == 0:
-                continue
-            if parallelFirst is None:
-                parallelFirst = i
-                continue
-            for j in range(min(len(road_dists[parallelFirst]), len(road_dists[i]))):
-                if abs(road_dists[i][j] - road_dists[parallelFirst][j]) > road_parallel_eps:
-                    isParallel = False
-                    break
-            if isParallel == False:
-                break
-        if parallelFirst is None:
-            isParallel = False
-
-        ###### check turn ######
-        isEmpty = False
-        empty_cnt = 0
-        empty_idx = -1
-        for i in range(start_row, rows):
-            if len(road_mids[i]) == 0:
-                if i == empty_idx + 1:
-                    empty_cnt += 1
-                    if empty_cnt == 20:
-                        isEmpty = True
-                else:
-                    empty_cnt = 1
-                empty_idx = i
-
-            if isEmpty and i >= 2 and len(road_mids[i-1]) == 1 and len(road_mids[i]) > 1:
-                isTurn = True
-                turnPoint = (i-1, road_mids[i - 1][0])
-                break
-
-    return road_mids, isMultiroad, isParallel, isTurn, turnPoint
-
-
-def printRoad(road_mids):
-    x = []
-    y = []
-    for i in range(rows):
-        for j in range(len(road_mids[i])):
-            x.append(road_mids[i][j])
-            y.append(480 - i)
-    plt.plot(x, y, 'o', color='b')
-    plt.show()
-
-
-############## Calculate indicator #################
+def isRoad(img, pos):
+    return img[pos[0]][pos[1]] >= 32
 
 
 def tranCoordinate(pos: Tuple):
     return (pos[1], -pos[0])
 
 
+def correctAngle(angle):
+    while angle >= 180:
+        # print(angle)
+        angle -= 360
+    while angle < -180:
+        # print(angle)
+        angle += 360
+    return angle
+
+
 def azimuthAngle(pos1: Tuple, pos2: Tuple):
-    pos1, pos2 = tranCoordinate(pos1), tranCoordinate(pos2)
-    x1, y1 = pos1[0], pos1[1]
-    x2, y2 = pos2[0], pos2[1]
-    angle = 0.0
-    dx = x2 - x1
-    dy = y2 - y1
-    if x2 == x1:
-        angle = math.pi / 2.0
-        if y2 == y1:
-            angle = 0.0
-        elif y2 < y1:
-            angle = 3.0 * math.pi / 2.0
-    elif x2 > x1 and y2 > y1:
-        angle = math.atan(dx / dy)
-    elif x2 > x1 and y2 < y1:
-        angle = math.pi / 2 + math.atan(-dy / dx)
-    elif x2 < x1 and y2 < y1:
-        angle = math.pi + math.atan(dx / dy)
-    elif x2 < x1 and y2 > y1:
-        angle = 3.0 * math.pi / 2.0 + math.atan(dy / -dx)
+    # pos1, pos2 = tranCoordinate(pos1), tranCoordinate(pos2)
+    y1, x1 = pos1
+    y2, x2 = pos2
+
+    angle = math.pi / 2 * (-1 if x2 > x1 else 1)
+    if y2 != y1:
+        angle = math.atan((x2-x1)/(y2-y1))
 
     # (-pi, pi]
     if angle > math.pi:
@@ -270,218 +215,348 @@ def azimuthAngle(pos1: Tuple, pos2: Tuple):
     if angle <= -math.pi:
         angle += 2.0 * math.pi
 
-    return np.rad2deg(angle) * (-1.0)
+    return - np.rad2deg(angle)
 
 
-def getNearestRoadMid(row_road_mids):
-    mid = 320
-    nearest = None
-    for road_mid in row_road_mids:
-        if nearest is None or abs(road_mid - mid) < abs(nearest - mid):
-            nearest = road_mid
-    return nearest
+def distance(p0, p1):
+    return ((p0[0] - p1[0]) ** 2.0 + (p0[1] - p1[1]) ** 2.0) ** 0.5
 
 
-def getSecondNearestRoadMid(row_road_mids):
-    mid = 640 / 2
-    first = None
-    second = None
-    for road_mid in row_road_mids:
-        if first is None:
-            first = road_mid
-        elif second is None:
-            second = road_mid
-            if abs(first - mid) > abs(second - mid):
-                first, second = second, first
-        elif abs(road_mid - mid) < abs(first - mid):
-            first = road_mid
-        elif abs(road_mid - mid) < abs(second - mid):
-            second = road_mid
-    return first, second
+def isValidPoint(point):
+    return (point[0] >= 0) and (point[0] < rows) and (point[1] >= 0) and (point[1] < cols)
 
 
-section_size = 30
+def getNearPointsToZero(r):
+    eps = 1
+    near_points = []
+    for i in range(int(-r)-2, int(r)+2):
+        for j in range(int(-r)-2, int(r)+2):
+            if abs(distance((0, 0), (i, j)) - r) <= eps:
+                near_points.append((i, j))
+    return near_points
 
 
-def calIndicator(road_mids, v):
-    rows = 480
-    cols = 640
-    mid = cols / 2
+def moveCoordinates(start_point, points):
+    moved_points = []
+    for i in range(len(points)):
+        moved_points.append((points[i][0] + start_point[0],
+                             points[i][1] + start_point[1]))
+    return moved_points
+
+
+def vector_delta_theta(p0, p1, p2):
+    y0, x0 = p0
+    y1, x1 = p1
+    y2, x2 = p2
+    v1 = (x1 - x0, y1 - y0)
+    v2 = (x2 - x1, y2 - y1)
+    # v1旋转到v2，逆时针为正，顺时针为负
+    # 2个向量模的乘积
+    TheNorm = np.linalg.norm(v1) * np.linalg.norm(v2)
+    deg_cos = np.dot(v1, v2) / TheNorm
+    if deg_cos > 1.0 and deg_cos < 1.0 + 0.000000001:
+        deg_cos = 1.0
+    if deg_cos < -1.0 and deg_cos > -1.0 - 0.000000001:
+        deg_cos = -1.0
+    # 叉乘
+    rho = np.rad2deg(np.arcsin(deg_cos))
+    # 点乘
+    theta = np.rad2deg(np.arccos(deg_cos))
+    # if rho < 0:
+    if rho > 0:
+        return - theta
+    else:
+        return theta
+    # vb = (x1 - x0, y1 - y0)
+    # vf = (x2 - x1, y2 - y1)
+    # lb = distance((0, 0), vb)
+    # lf = distance((0, 0), vf)
+    # deg_cos = (vb[0] * vf[0] + vb[1] * vf[1]) / lb / lf
+    # # flag = np.sign((vb[0] * vf[1]) - (vf[0] * vb[1]))
+    # if deg_cos > 1.0 and deg_cos < 1.0 + 0.000000001:
+    #     deg_cos = 1.0
+    # if deg_cos < -1.0 and deg_cos > -1.0 - 0.000000001:
+    #     deg_cos = -1.0
+    # return np.rad2deg(math.acos(deg_cos)
+    # # return abs(np.rad2deg(math.acos(deg_cos))) * flag
+
+
+def printPoints(points):
+    fig, ax = plt.subplots(1, 1)
+    x = []
+    y = []
+    for point in points:
+        y.append(point[0])
+        x.append(point[1])
+    plt.plot(x, y, '.', color='b')
+    plt.xlim(0, cols)
+    plt.ylim(0, rows)
+    ax.invert_yaxis()
+    plt.show()
+
+
+def moveStep(img, start_point, last_point, r):
+    global near_points_to_zero
+    near_points = moveCoordinates(start_point, near_points_to_zero[r])
+    theta = None
+    next_point = None
+    # print('near_points', near_points)
+    for near_point in near_points:
+        # print('start', start_point, 'near', near_point)
+        if isValidPoint(near_point) and isRoad(img, near_point):
+            near_theta = vector_delta_theta(
+                last_point, start_point, near_point)
+            if theta is None or abs(near_theta) < abs(theta):
+                next_point, theta = near_point, near_theta
+    return next_point, theta
+
+
+def scanStartPoint(img, r):
+    start_points = []
+    for i in range(rows - 1, 0, -1):
+        for j in range(cols):
+            if isRoad(img, (i, j)):
+                start_points.append((i, j))
+        if len(start_points) > 0:
+            break
+
+    # print('start_points', start_points)
+    if len(start_points) == 0:
+        return None
+
+    min_theta = None
+    real_point = start_points[0]
+    for start_point in start_points:
+        _, theta = moveStep(
+            img, start_point, (start_point[0]+5, start_point[1]), r)
+        if theta is None:
+            continue
+        if min_theta is None or theta < min_theta:
+            min_theta = theta
+            real_point = start_point
+
+    return real_point
+
+
+def getRoad(img, start_point, r):
+    points = [(start_point[0]+5, start_point[1]), start_point]
+    thetas = []
+
+    while True:
+        next_point, theta = moveStep(img, points[-1], points[-2], r)
+        if next_point is None or theta is None:
+            found = False
+            for big_r in range(r, r+5):
+                next_point, theta = moveStep(
+                    img, points[-1], points[-2], big_r)
+                if next_point is not None and theta is not None:
+                    found = True
+                    break
+            if found is False:
+                break
+        if abs(theta) > (180 * 7 / 8):
+            break
+
+        points.append(next_point)
+        thetas.append(theta)
+        # if len(points) > 10:
+        # printPoints(points)
+        # print(points)
+        # print("len(points) = ", len(points))
+        # last_theta += theta
+    return points[1:], thetas
+
+
+def handleRoad(img):
+    r0 = 15
+    r1 = 15
+    start_point = scanStartPoint(img, r0)
+    if start_point is None:
+        return None, None
+    points, thetas = getRoad(img, start_point, r1)
+    return points, thetas
+
+############# Calculator Indicator ################
+
+
+def getThetasToCar(points, size):
+    # print('points', points, size)
+    if len(points) < size:
+        raise Exception("Points not enough.")
+    car_thetas = []
     car_pos = (rows, cols / 2)
-    global section_size
-    global weights
-    v = findNearestV(v, weights)
+    for i in range(size):
+        car_thetas.append(azimuthAngle(car_pos, points[i]))
+    return car_thetas
 
-    valid_count = 0
-    road_mid_sum = 0
+
+def getAverageTheta(car_thetas, thetas, front_size, weights):
+    theta_sum = 0
     weight_sum = 0
-    indicator = 0
-
-    turnDirection = None
-    dist_valid_count = 0
-    dist_sum = 0
-
-    inCurrentRoad = False
-
-    for i, row_road_mids in enumerate(road_mids):
-        road_mid, road_mid_2 = getSecondNearestRoadMid(row_road_mids)
-
-        if road_mid is not None:
-            valid_count += 1
-            road_mid_sum += road_mid
-
-        if road_mid_2 is not None:
-            dist_valid_count += 1
-            dist_sum += road_mid_2 - mid
-
-        if ((i + 1) % section_size) == 0:
-            section_id = i // section_size
-
-            if valid_count != 0:
-                target_pos = (i - section_size // 2,
-                              (road_mid_sum / valid_count))
-                theta = azimuthAngle(car_pos, target_pos)
-                weight = weights[v][section_id]
-                indicator += theta * weight
-                weight_sum += weight
-                if section_id >= (rows - 1 - section_size * 3) // section_size:
-                    inCurrentRoad = True
-                # print("section = ", i//section_size,
-                #   " target_pos = ", target_pos, " theta = ", theta)
-            valid_count = 0
-            road_mid_sum = 0
+    for i in range(len(thetas)):
+        if i < front_size:
+            theta_sum += car_thetas[i] * weights[i] / 2
+            weight_sum += weights[i] / 2
+        theta_sum += thetas[i] * weights[i]
+        weight_sum += weights[i]
+    print('')
+    print('car_thetas = ', car_thetas)
+    print('thetas = ', thetas)
+    print('weights = ', weights)
 
     if weight_sum == 0:
-        return None, None, False
-    indicator /= weight_sum
-    turnDirection = getLabel(dist_sum) * (-1)  # left: +, right: -
-    return indicator, turnDirection, inCurrentRoad
+        return None
+    return theta_sum / weight_sum
+    # return correctAngle(theta_sum) / 2
+
+
+def generateWeights(size, v, front_size):
+
+    # for v in [0, 0.1, 0.2, 0.5, 1, 2, 3]:
+    #     print('v = ', v)
+
+    # weight =  -math.log10((i / size) + 1) + 1
+    # if i < front_size:
+    # weight += 1.5
+
+    weights = []
+    global max_v
+
+    k = 1
+    min_weight = None
+    max_weight = None
+    for i in range(size):
+        # print('i/size = ', i/size, 'v/max_v = ', v/max_v)
+        weight = -0.0005 * (i/size - v/max_v) ** 2
+        weights.append(weight)
+        if min_weight is None or weight < min_weight:
+            min_weight = weight
+        if max_weight is None or weight > max_weight:
+            max_weight = weight
+    # print('weights = ', weights)
+    c = 0
+    if min_weight <= 0:
+        c = c - min_weight + (max_weight - min_weight) / 10
+    while abs(k * (min_weight + c)) < 1:
+        k *= 10
+
+    for i in range(size):
+        weights[i] = k * (weights[i] + c)
+
+        # print('v = ', v, 'weights = ', weights)
+    return weights
+
+
+def calIndicator(points, thetas, v):
+    front_size = max(len(thetas) // 5, 5)
+    if len(points) < front_size:
+        return None
+    car_thetas = getThetasToCar(points, front_size)
+    weights = generateWeights(len(thetas), v, front_size)
+    return getAverageTheta(car_thetas, thetas, front_size, weights)
 
 
 ################# main function ###################
 
+max_v = 3
+
+
+def calV(w):
+    # return max_v - ((max_v - 0.01) / 157.5) * theta
+    w = abs(w)
+
+    if w <= 15:
+        return 3
+    elif w <= 30:
+        return 2
+    elif w <= 45:
+        return 1
+    elif w <= 60:
+        return 0.5
+    elif w <= 90:
+        return 0.2
+    else:
+        return 0.1
+
+
+def simMove():
+    sim.simxSynchronousTrigger(clientID)  # 进行下一步
+    sim.simxGetPingTime(clientID)    # 使得该仿真步走完
+
+
 def main():
 
+    initRoad([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20])
+
+    # print("ok")
+
     # pid_v = pidController(kp=0.3, ki=0, kd=0)
-    pid_w_5, clear_w_5 = pidController(kp=0.01, ki=0, kd=0.015)
-    pid_w_3, clear_w_3 = pidController(kp=0.008, ki=0, kd=0.005)  # 0.006
-    pid_w_1, clear_w_1 = pidController(kp=0.005, ki=0.00, kd=0.01)
+    pid, _ = pidController(kp=0.5, ki=0, kd=0)
 
     ############### Initial ###############
     v = 0
     w = 0
-    pre_idx = 0
-    pre_size = 5
-    pres = {
-        "v": [0] * pre_size,
-        "w": [0] * pre_size
-    }
-    pre_labels = {
-        "isMultiroad": [False] * pre_size,
-        "isParallel": [False] * pre_size,
-        "isTurn": [False] * pre_size,
-        "turnPoint": [(0, 0)]*pre_size,
-        "turnDirection": [None] * pre_size
-    }
-
     ############### Get Image ###############
-    sim.simxSynchronousTrigger(clientID)  # 让仿真走一步
-    # lastCmdTime = sim.simxGetLastCmdTime(clientID)
+
+    sim.simxSynchronousTrigger(clientID)
     err, resolution, image = sim.simxGetVisionSensorImage(
         clientID, vision_sensor, 0, sim.simx_opmode_streaming)
+
+    count = 0
     while (sim.simxGetConnectionId(clientID) != -1):
-        # currCmdTime = sim.simxGetLastCmdTime(clientID)
-        # dt = currCmdTime - lastCmdTime
         err, resolution, image = sim.simxGetVisionSensorImage(
             clientID, vision_sensor, 0, sim.simx_opmode_buffer)
         if err == sim.simx_return_ok:
+            count += 1
             img = np.array(image, dtype=np.uint8)
             img.resize([resolution[1], resolution[0], 3])
             img = handleGraph(img)
-            # cv2.imwrite("./img.png", img)
-            road_mids, isMultiroad, isParallel, isTurn, turnPoint = recognizeRoad(
-                img)
-            # printRoad(road_mids)
-            indicator, turnDirection, inCurrentRoad = calIndicator(
-                road_mids, v)
-            print("indicator = ", indicator, " isMultiroad = ",
-                  isMultiroad, " isParallel = ", isParallel, " isTurn = ", isTurn, " turnPoint = ", turnPoint, " turnDirection = ", turnDirection, " inCurrentRoad = ", inCurrentRoad)
 
-            # break
+            cv2.imwrite("../Images/img.png", img)
 
-            """
-            并道： isMultiroad and isParallel
-            交叉或转弯： isMultiroad and not isParallel, 此时判断未来可能的转弯方向为 turnDirection
-            转弯： isTurn, 转弯顶点为 turnPoint
-            当前小车是否在路上：inCurrentRoad
-            """
-
-            # 急转弯
-            if inCurrentRoad == False and getMost(pre_labels["isTurn"]) == True:
-                v = 0
-                w = getTurnDirection(pre_labels, pre_size) * 0.6
-                move(v, w)
-                print("-- v = ", v, " w = ", w)
-                sim.simxSynchronousTrigger(clientID)  # 进行下一步
-                sim.simxGetPingTime(clientID)    # 使得该仿真步走完
-                continue
-
-            # 无路
-            if indicator is None:
-                v = sum(pres["v"]) / pre_size
-                w = sum(pres["w"]) / pre_size
-                move(v, w)
-                sim.simxSynchronousTrigger(clientID)  # 进行下一步
-                sim.simxGetPingTime(clientID)    # 使得该仿真步走完
-                continue
-
-            # break
-
-            # if abs(indicator) < 20 and ((not isMultiroad) or (isMultiroad and isParallel)):
-            #     v = 0.5
-            #     w = pid_w_5(indicator)
-            # elif
-
-            # if abs(indicator) < 40 and ((not isMultiroad) or (isMultiroad and isParallel)):
-            #     v = 0.3
-            #     w = pid_w_3(indicator)
-            # else:
-            #     v = 0.1
-            #     w = pid_w_1(indicator)
-
-            # v = 0.3
-            # w = pid_w_3(indicator)
-            # v = 0.5
-            # w = pid_w_5(indicator)
-            # if abs(indicator) >= 20 or (isTurn and turnPoint[0] <= 300):
-            v = 0.3
-            w = pid_w_3(indicator)
-            if abs(indicator) >= 50:
+            points, thetas = handleRoad(img)
+            if points is None or thetas is None:
                 v = 0.1
-                w = pid_w_1(indicator)
-            print("v = ", v, " w = ", w)
+                move(v, w)
+                print('v = ', v, 'w = ', w)
+                simMove()
+                continue
 
+            # print(len(points))
+            # print("points = ", points)
+            # printPoints(points)
+            # print('thetas = ', thetas)
+            theta = calIndicator(points, thetas, v)
+
+            if theta is None:
+                v = 0.1
+                move(v, w)
+                print('v = ', v, 'w = ', w)
+                simMove()
+                continue
+
+            # theta = 2.5 * theta
+
+            w = pid(theta)
+            if count == 1:
+                v = 0.5
+            else:
+                v = calV(w)
+            print('theta = ', theta, 'v = ', v, 'w = ', w)
             move(v, w)
 
-            pres["v"][pre_idx] = v
-            pres["w"][pre_idx] = w
-            pre_labels["isMultiroad"][pre_idx] = isMultiroad
-            pre_labels["isParallel"][pre_idx] = isParallel
-            pre_labels["isTurn"][pre_idx] = isTurn
-            pre_labels["turnPoint"][pre_idx] = turnPoint
-            pre_labels["turnDirection"][pre_idx] = turnDirection
-            pre_idx = (pre_idx + 1) % pre_size
+            # break
+
+            simMove()
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
 
         elif err == sim.simx_return_novalue_flag:
-            print("Getting image: no image yet")
+            pass
+            # print("Getting image: no image yet")
         else:
             print("Gettimg image: error with code = ", err)
-
-        sim.simxSynchronousTrigger(clientID)  # 进行下一步
-        sim.simxGetPingTime(clientID)    # 使得该仿真步走完
 
 
 if __name__ == '__main__':
