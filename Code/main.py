@@ -32,7 +32,7 @@ _, vision_sensor = sim.simxGetObjectHandle(
 
 
 # 设置仿真步长，为了保持API端与V-rep端相同步长
-tstep = 0.1
+tstep = 0.05
 sim.simxSetFloatingParameter(
     clientID, sim.sim_floatparam_simulation_time_step, tstep, sim.simx_opmode_oneshot)
 # 打开同步模式
@@ -79,8 +79,85 @@ def move(v, w):
 
 ############## Handle Graph #################
 
+def isPointInContours(contours, point):
+    for i, contour in enumerate(contours):
+        flag = cv2.pointPolygonTest(contour, point, False)
+        if flag == 1:
+            return True, i
+    return False, None
+def isCornerInContours(contours, corner, fills):
+    check_size = 5
+    contour_id = None
+    cnt = 0
+    for i in range(check_size):
+        flag, cur_id = isPointInContours(
+            contours, (corner[1] - i, corner[0] - i))
+        if flag == 1 and (contour_id is None or cur_id == contour_id):
+            cnt += 1
+            contour_id = cur_id
+    if cnt >= (check_size // 2) + 1 and contours[contour_id] not in fills:
+        area = cv2.contourArea(contours[contour_id])
+        if area <= rows * cols / 4:
+            fills.append(contours[contour_id])
+def fillImage(img, fills):
+    cv2.drawContours(img, fills, -1, (0, 0, 0), cv2.FILLED)
+    return img
+def handleGraphEdges(img, contours):
+    fills = []
+    isCornerInContours(contours, (10, 630), fills)
+    isCornerInContours(contours, (10, 10), fills)
+    if len(fills) > 0:
+        img = fillImage(img, fills)
+    return img
 
 def handleGraph(img):
+    img = np.flip(img, 0)
+
+    # for i in range(rows):
+    #     for j in range(cols):
+    #         if (img[i][j] == [0, 0, 0]).all():
+    #             img[i][j] = [190, 190, 190]
+    img[np.where((img == [0, 0, 0]).all(axis=2))] = [190, 190, 190]
+    #cv2.imwrite("../Images/origin.png", img)
+    # Convert image to greyscale.
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # Process image using Gaussian blur.
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    # Process image using Color Threshold.
+    _, thresh = cv2.threshold(blur, 60, 255, cv2.THRESH_BINARY_INV)
+
+    #contours, _ = cv2.findContours(thresh, 1, cv2.CHAIN_APPROX_NONE)
+    #thresh = handleGraphEdges(thresh, contours)
+    # cv2.imwrite("../Images/thresh.png", thresh)
+
+    # Transfer perspective
+    pts1 = np.float32([[0, 0], [639, 0], [0, 479], [639, 479]])
+    pts2 = np.float32([[0, 110], [639, 110], [250, 479], [389, 479]])
+    M = cv2.getPerspectiveTransform(pts1, pts2)
+    trans = cv2.warpPerspective(thresh, M, (640, 480))
+    # cv2.imwrite("../Images/trans.png", trans)
+
+    # Erode to get a line to represent road
+    mask = cv2.erode(trans, None, iterations=1)
+    mask = cv2.dilate(mask, None, iterations=3)
+    # Get contour
+    contour_img = cv2.Canny(mask, 50, 150)
+    # Dilate contour image
+    mask = cv2.dilate(contour_img, None, iterations=1)
+    # mid_img = mask.copy()
+    # for i in range(rows):
+    #     pre = None
+    #     for j in range(1, cols):
+    #         mid_img[i][j] = 0
+    #         if (isRoad(mid_img, (i, j - 1)) ^ isRoad(mid_img, (i, j))) == True:
+    #             if pre is not None:
+    #                 if (j - pre) >= 2 and (j - pre) <= 8:
+    #                     mid_img[i][(pre + j) // 2] = 128
+    #             pre = j
+    # cv2.imwrite("../Images/mid_img.png", mid_img)
+
+    return mask
+def handleGraph2(img):
     img = np.flip(img, 0)
     # Convert image to greyscale.
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -103,7 +180,6 @@ def handleGraph(img):
 
     # cv2.imwrite("../Image/img.png", mask)
     return mask
-
 ################ PID Control ###################
 
 
@@ -364,8 +440,8 @@ def main():
 
     # pid_v = pidController(kp=0.3, ki=0, kd=0)
     pid_w_5, clear_w_5 = pidController(kp=0.01, ki=0, kd=0.015)
-    pid_w_3, clear_w_3 = pidController(kp=0.008, ki=0, kd=0.005)  # 0.006
-    pid_w_1, clear_w_1 = pidController(kp=0.005, ki=0.00, kd=0.01)
+    pid_w_3, clear_w_3 = pidController(kp=0.015, ki=0, kd=0.005)  # 0.006
+    pid_w_1, clear_w_1 = pidController(kp=0.01, ki=0.00, kd=0.01)
 
     ############### Initial ###############
     v = 0
@@ -389,6 +465,11 @@ def main():
     # lastCmdTime = sim.simxGetLastCmdTime(clientID)
     err, resolution, image = sim.simxGetVisionSensorImage(
         clientID, vision_sensor, 0, sim.simx_opmode_streaming)
+    turnFlag = 0
+    turnFlag1 = 0
+    turnFlag2 = 0
+    neg = 1
+    direct = 1
     while (sim.simxGetConnectionId(clientID) != -1):
         # currCmdTime = sim.simxGetLastCmdTime(clientID)
         # dt = currCmdTime - lastCmdTime
@@ -398,7 +479,7 @@ def main():
             img = np.array(image, dtype=np.uint8)
             img.resize([resolution[1], resolution[0], 3])
             img = handleGraph(img)
-            # cv2.imwrite("./img.png", img)
+            cv2.imwrite("./img.png", img)
             road_mids, isMultiroad, isParallel, isTurn, turnPoint = recognizeRoad(
                 img)
             # printRoad(road_mids)
@@ -407,7 +488,7 @@ def main():
             print("indicator = ", indicator, " isMultiroad = ",
                   isMultiroad, " isParallel = ", isParallel, " isTurn = ", isTurn, " turnPoint = ", turnPoint, " turnDirection = ", turnDirection, " inCurrentRoad = ", inCurrentRoad)
 
-            # break
+            #break
 
             """
             并道： isMultiroad and isParallel
@@ -419,8 +500,10 @@ def main():
             # 急转弯
             if inCurrentRoad == False and getMost(pre_labels["isTurn"]) == True:
                 v = 0
-                w = getTurnDirection(pre_labels, pre_size) * 0.6
+                w = getTurnDirection(pre_labels, pre_size) * 3
+                direct = w/3
                 move(v, w)
+                turnFlag1 = 1 # 可进一步缩小，但可能再小就转不过来了
                 print("-- v = ", v, " w = ", w)
                 sim.simxSynchronousTrigger(clientID)  # 进行下一步
                 sim.simxGetPingTime(clientID)    # 使得该仿真步走完
@@ -430,7 +513,11 @@ def main():
             if indicator is None:
                 v = sum(pres["v"]) / pre_size
                 w = sum(pres["w"]) / pre_size
+                v = 0.1
+                w = abs(w)/w*2
+                print("no line: v = ", v, "w = ", w)
                 move(v, w)
+                turnFlag1 = 2
                 sim.simxSynchronousTrigger(clientID)  # 进行下一步
                 sim.simxGetPingTime(clientID)    # 使得该仿真步走完
                 continue
@@ -454,8 +541,34 @@ def main():
             # v = 0.5
             # w = pid_w_5(indicator)
             # if abs(indicator) >= 20 or (isTurn and turnPoint[0] <= 300):
-            v = 0.3
+            v = 0.8
             w = pid_w_3(indicator)
+            # if isMultiroad:
+            #     w /= 10
+            if isTurn:
+                turnFlag = 15;
+            if turnFlag:
+                v = 0.5
+                #w = abs(w)/w*2
+                turnFlag -= 1
+            if turnFlag1:
+                v = 0.1
+                if pre_idx == 0:
+                    tempw = pres["w"][pre_size-1]
+                else:
+                    tempw = pres["w"][pre_idx-1]
+                w = abs(tempw)/tempw*2
+                turnFlag1 -= 1
+                if turnFlag1 == 0:
+                    turnFlag2 = 7
+                    neg = -1
+
+            if turnFlag2:
+                v = 0.1
+                w =  -6 * direct
+                turnFlag2 -= 1
+            # if isMultiroad:
+            #     w = 0
             if abs(indicator) >= 50:
                 v = 0.1
                 w = pid_w_1(indicator)
@@ -464,7 +577,8 @@ def main():
             move(v, w)
 
             pres["v"][pre_idx] = v
-            pres["w"][pre_idx] = w
+            pres["w"][pre_idx] = w*neg
+            neg = 1
             pre_labels["isMultiroad"][pre_idx] = isMultiroad
             pre_labels["isParallel"][pre_idx] = isParallel
             pre_labels["isTurn"][pre_idx] = isTurn
