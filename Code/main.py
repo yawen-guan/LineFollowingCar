@@ -63,9 +63,12 @@ def move(v, w):
     """
     Differential Drive Movement.
 
-    :param v: desired velocity of car, unit: m
-    :param w: desired angular velocity of car (Relative to ICR), unit: deg
+    :param v: desired velocity of car, unit: m/s
+    :param w: desired angular velocity of car (Relative to ICR), unit: deg/s
     """
+    # w: deg/tstep
+    w *= 1 / tstep
+
     v_l = v - w * center_distance
     v_r = v + w * center_distance
 
@@ -89,7 +92,7 @@ def isPointInContours(contours, point):
 
 
 def isCornerInContours(contours, corner, fills):
-    check_size = 10
+    check_size = 5
     contour_id = None
     cnt = 0
     for i in range(check_size):
@@ -118,6 +121,10 @@ def handleGraphEdges(img, contours):
     return img
 
 
+def isRoad(img, pos):
+    return img[pos[0]][pos[1]] >= 32
+
+
 def handleGraph(img):
     img = np.flip(img, 0)
     # cv2.imwrite("../Images/origin.png", img)
@@ -142,6 +149,19 @@ def handleGraph(img):
 
     # Erode to get a line to represent road
     mask = cv2.erode(trans, None, iterations=2)
+
+    # mid_img = mask.copy()
+    # for i in range(rows):
+    #     pre = None
+    #     for j in range(1, cols):
+    #         mid_img[i][j] = 0
+    #         if (isRoad(mid_img, (i, j - 1)) ^ isRoad(mid_img, (i, j))) == True:
+    #             if pre is not None:
+    #                 if (j - pre) >= 2 and (j - pre) <= 8:
+    #                     mid_img[i][(pre + j) // 2] = 128
+    #             pre = j
+    # cv2.imwrite("../Images/mid_img.png", mid_img)
+
     return mask
 
 
@@ -180,10 +200,6 @@ def pidController(kp: float, ki: float, kd: float):
 def initRoad(rs):
     for r in rs:
         near_points_to_zero[r] = getNearPointsToZero(r)
-
-
-def isRoad(img, pos):
-    return img[pos[0]][pos[1]] >= 32
 
 
 def tranCoordinate(pos: Tuple):
@@ -302,8 +318,8 @@ def moveStep(img, start_point, last_point, r):
     next_point = None
     # print('near_points', near_points)
     for near_point in near_points:
-        # print('start', start_point, 'near', near_point)
         if isValidPoint(near_point) and isRoad(img, near_point):
+            # print('start', start_point, 'near', near_point)
             near_theta = vector_delta_theta(
                 last_point, start_point, near_point)
             if theta is None or abs(near_theta) < abs(theta):
@@ -342,6 +358,7 @@ def getRoad(img, start_point, r):
     points = [(start_point[0]+5, start_point[1]), start_point]
     thetas = []
 
+    print('in getRoad: start_point =', start_point)
     while True:
         next_point, theta = moveStep(img, points[-1], points[-2], r)
         if next_point is None or theta is None:
@@ -412,7 +429,7 @@ def getAverageTheta(car_thetas, thetas, front_size, weights):
         return None
 
     print('weights = ', weights)
-    print('theta = ', theta_sum / weight_sum)
+    # print('theta = ', theta_sum / weight_sum)
 
     return theta_sum / weight_sum
 
@@ -425,7 +442,7 @@ def generateWeights(size, v, front_size):
     for i in range(size):
         weight = -math.log10((i / size) + 1) + 1
         if i < front_size:
-            weight += 1.5
+            weight += 1
         weights.append(weight)
 
     return weights
@@ -468,7 +485,7 @@ max_v = 3
 
 def calV(theta):
     # return max_v - ((max_v - 0.01) / 157.5) * theta
-    theta = abs(theta)
+    theta = abs(theta) * 4
 
     if theta <= 15:
         return 3
@@ -490,11 +507,12 @@ def simMove():
 
 
 def main():
+
     initRoad([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20])
 
     print('initial finished')
 
-    pid, _ = pidController(kp=0.5, ki=0, kd=0)
+    pid, _ = pidController(kp=1, ki=0, kd=0)
 
     ############### Initial ###############
     v = 0
@@ -518,8 +536,11 @@ def main():
             cv2.imwrite("../Images/img.png", img)
 
             points, thetas = handleRoad(img)
+
+            # printPoints(points)
+
             if points is None or thetas is None:
-                v = 0.1
+                v = 0.01
                 move(v, w)
                 print('v = ', v, 'w = ', w)
                 simMove()
@@ -528,7 +549,7 @@ def main():
             theta = calIndicator(points, thetas, v)
 
             if theta is None:
-                v = 0.1
+                v = 0.01
                 move(v, w)
                 print('v = ', v, 'w = ', w)
                 simMove()
