@@ -69,15 +69,6 @@ def move(v, w):
     :param w: desired angular velocity of car (Relative to ICR), unit: deg/s
     """
 
-    # global car_theta_weight
-    # global front_weight
-    # if v <= 0.5:
-    #     car_theta_weight = 3
-    #     front_weight = 3
-    # else:
-    #     car_theta_weight = 2
-    #     front_weight = 2
-
     # w: deg/tstep
     w *= 1 / tstep
 
@@ -198,36 +189,25 @@ def initRoad(rs):
         near_points_to_zero[r] = getNearPointsToZero(r)
 
 
-def tranCoordinate(pos: Tuple):
-    return (pos[1], -pos[0])
+def img2stand(pos: Tuple):
+    return (pos[1], rows - pos[0])
 
 
-def correctAngle(angle):
-    while angle >= 180:
-        # print(angle)
+def stand2img(pos: Tuple):
+    return (rows-pos[1], pos[0])
+
+
+def correctAngle(angle):  # (-180, 180]
+    while angle > 180:
         angle -= 360
-    while angle < -180:
-        # print(angle)
+    while angle <= -180:
         angle += 360
     return angle
 
 
-def azimuthAngle(pos1: Tuple, pos2: Tuple):
-    # pos1, pos2 = tranCoordinate(pos1), tranCoordinate(pos2)
-    y1, x1 = pos1
-    y2, x2 = pos2
-
-    angle = math.pi / 2 * (-1 if x2 > x1 else 1)
-    if y2 != y1:
-        angle = math.atan((x2-x1)/(y2-y1))
-
-    # (-pi, pi]
-    if angle > math.pi:
-        angle -= 2.0 * math.pi
-    if angle <= -math.pi:
-        angle += 2.0 * math.pi
-
-    return np.rad2deg(angle)
+def azimuthAngle(pos1: Tuple, pos2: Tuple):  # stand
+    virtual_point = (pos1[0], pos1[1] - 5)
+    return vector_delta_theta(virtual_point, pos1, pos2)
 
 
 def distance(p0, p1):
@@ -257,53 +237,35 @@ def moveCoordinates(start_point, points):
 
 
 def vector_delta_theta(p0, p1, p2):
-    y0, x0 = p0
-    y1, x1 = p1
-    y2, x2 = p2
+    x0, y0 = p0
+    x1, y1 = p1
+    x2, y2 = p2
     v1 = (x1 - x0, y1 - y0)
     v2 = (x2 - x1, y2 - y1)
-    # v1旋转到v2，逆时针为正，顺时针为负
-    # 2个向量模的乘积
-    TheNorm = np.linalg.norm(v1) * np.linalg.norm(v2)
-    deg_cos = np.dot(v1, v2) / TheNorm
-    if deg_cos > 1.0 and deg_cos < 1.0 + 0.000000001:
-        deg_cos = 1.0
-    if deg_cos < -1.0 and deg_cos > -1.0 - 0.000000001:
-        deg_cos = -1.0
-    # 叉乘
-    rho = np.rad2deg(np.arcsin(deg_cos))
     # 点乘
-    theta = np.rad2deg(np.arccos(deg_cos))
-    # if rho < 0:
-    if rho > 0:
-        return - theta
-    else:
-        return theta
-    # vb = (x1 - x0, y1 - y0)
-    # vf = (x2 - x1, y2 - y1)
-    # lb = distance((0, 0), vb)
-    # lf = distance((0, 0), vf)
-    # deg_cos = (vb[0] * vf[0] + vb[1] * vf[1]) / lb / lf
-    # # flag = np.sign((vb[0] * vf[1]) - (vf[0] * vb[1]))
-    # if deg_cos > 1.0 and deg_cos < 1.0 + 0.000000001:
-    #     deg_cos = 1.0
-    # if deg_cos < -1.0 and deg_cos > -1.0 - 0.000000001:
-    #     deg_cos = -1.0
-    # return np.rad2deg(math.acos(deg_cos)
-    # # return abs(np.rad2deg(math.acos(deg_cos))) * flag
+    TheNorm = np.linalg.norm(v1) * np.linalg.norm(v2)
+    vcos = np.dot(v1, v2) / TheNorm
+    if vcos > 1.0 and vcos < 1.0 + 0.000000001:
+        vcos = 1.0
+    if vcos < -1.0 and vcos > -1.0 - 0.000000001:
+        vcos = -1.0
+    # 叉乘判断正负
+    flag = np.sign(v1[0] * v2[1] - v1[1] * v2[0])
+    theta = np.rad2deg(np.arccos(vcos))  # [0, 180)
+    if flag < 0:
+        theta *= -1
+    return theta
 
 
-def printPoints(points):
-    fig, ax = plt.subplots(1, 1)
+def printPoints(points):  # stand
     x = []
     y = []
     for point in points:
-        y.append(point[0])
-        x.append(point[1])
+        x.append(point[0])
+        y.append(point[1])
     plt.plot(x, y, '.', color='b')
     plt.xlim(0, cols)
     plt.ylim(0, rows)
-    ax.invert_yaxis()
     plt.show()
 
 
@@ -312,10 +274,8 @@ def moveStep(img, start_point, last_point, r):
     near_points = moveCoordinates(start_point, near_points_to_zero[r])
     theta = None
     next_point = None
-    # print('near_points', near_points)
     for near_point in near_points:
-        if isValidPoint(near_point) and isRoad(img, near_point):
-            # print('start', start_point, 'near', near_point)
+        if isValidPoint(stand2img(near_point)) and isRoad(img, stand2img(near_point)):
             near_theta = vector_delta_theta(
                 last_point, start_point, near_point)
             if theta is None or abs(near_theta) < abs(theta):
@@ -328,19 +288,19 @@ def scanStartPoint(img, r):
     for i in range(rows - 1, 0, -1):
         for j in range(cols):
             if isRoad(img, (i, j)):
-                start_points.append((i, j))
+                start_points.append(img2stand((i, j)))
         if len(start_points) > 0:
             break
 
-    # print('start_points', start_points)
+    print('start_points = ', start_points)
     if len(start_points) == 0:
         return None
 
     min_theta = None
     real_point = start_points[0]
     for start_point in start_points:
-        _, theta = moveStep(
-            img, start_point, (start_point[0]+5, start_point[1]), r)
+        virtual_point = (start_point[0], start_point[1] - 5)
+        _, theta = moveStep(img, start_point, virtual_point, r)
         if theta is None:
             continue
         if min_theta is None or theta < min_theta:
@@ -351,11 +311,10 @@ def scanStartPoint(img, r):
 
 
 def getRoad(img, start_point, r):
-    virtual_point = (start_point[0]+5, start_point[1])
+    virtual_point = (start_point[0], start_point[1] - 5)
     points = [virtual_point, start_point]
     thetas = [azimuthAngle(virtual_point, start_point)]
 
-    print('in getRoad: start_point =', start_point)
     while True:
         next_point, theta = moveStep(img, points[-1], points[-2], r)
         if next_point is None or theta is None:
@@ -373,17 +332,7 @@ def getRoad(img, start_point, r):
 
         points.append(next_point)
         thetas.append(theta)
-        # if len(points) > 10:
-        # printPoints(points)
-        # print(points)
-        # print("len(points) = ", len(points))
-        # last_theta += theta
     return points[1:], thetas
-
-# def simplify(points, thetas):
-#     pre_theta = thetas[0]
-#     for i in range(1, len(thetas)):
-#         if abs()
 
 
 def handleRoad(img):
@@ -411,11 +360,13 @@ def getThetasToCar(points, size):
     if len(points) < size:
         raise Exception("Points not enough.")
     car_thetas = []
-    car_pos = (rows + 20, cols / 2)
+    car_pos = (cols / 2, -30)
+
     for i in range(size):
         # print('point = ', points[i], 'azimuthAngle = ', azimuthAngle(car_pos, points[i]))
-        car_thetas.append(azimuthAngle(car_pos, points[i]))
-    return smoothList(car_thetas)
+        car_theta = azimuthAngle(car_pos, points[i])
+        car_thetas.append(car_theta)
+    return car_thetas
 
 
 def getAverageTheta(car_thetas, thetas, front_size, weights):
@@ -424,8 +375,8 @@ def getAverageTheta(car_thetas, thetas, front_size, weights):
     global car_theta_weight
     for i in range(len(thetas)):
         if i < front_size:
-            theta_sum += car_thetas[i] * car_theta_weight
-            weight_sum += car_theta_weight
+            theta_sum += car_thetas[i] * weights[i] * 2
+            weight_sum += weights[i] * 2
         theta_sum += thetas[i] * weights[i]
         weight_sum += weights[i]
 
@@ -437,19 +388,32 @@ def getAverageTheta(car_thetas, thetas, front_size, weights):
     return theta_sum / weight_sum
 
 
-def generateWeights(size, front_size):
+def generateWeights(size, front_size, v):
     weights = []
     # global front_weight
-    global car_theta_weight
-    car_theta_weight = 2
+    # global car_theta_weight
+    # car_theta_weight = 2
+
+    if v == 0:
+        v = 0.01
+    k = - 6 / v
+    b = (1 - size) * k + 1
+
     for i in range(size):
-        if (i / size) < 0.3 or i < front_size:
-            weight = 3
-        elif (i / size) < 0.8:
-            weight = 2
-        else:
-            weight = 1
+        ########
+        # if (i / size) < 0.3 or i < front_size:
+        #     weight = 3
+        # elif (i / size) < 0.8:
+        #     weight = 2
+        # else:
+        #     weight = 1
+
+        ##########
         # weight = 1
+
+        #######
+        weight = k * i + b
+
         # if i < front_size:
         #     weight = front_weight
         weights.append(weight)
@@ -460,18 +424,40 @@ def generateWeights(size, front_size):
 front_rate = 0.3
 
 
-def calIndicator(points, thetas):
-    global front_rate
-    front_size = max(int(len(thetas) * front_rate), 2)
-    if len(points) < front_size:
-        return None
+def calIndicator(points, thetas, v):
+    # global front_rate
+    # front_size = max(int(len(thetas) * front_rate), 2)
+    # if len(points) < front_size:
+    #     return None
+    front_size = len(points)
     car_thetas = getThetasToCar(points, front_size)
-    weights = generateWeights(len(thetas), front_size)
+    weights = generateWeights(len(thetas), front_size, v)
     print('')
     print('points = ', points)
     print('thetas = ', thetas)
     print('car_thetas = ', car_thetas)
+    front_size = max(int(len(thetas) * 0.2), 5)
     return getAverageTheta(car_thetas, thetas, front_size, weights)
+
+
+def analysis(points, thetas):
+    theta_sum = 0
+    isTurn = False
+    turnPoint = None
+    for i in range(len(thetas)):
+        theta_sum += thetas[i]
+        if abs(theta_sum) >= 85:
+            isTurn = True
+            turnPoint = i
+            break
+    theta_sum = 0
+    isStra = True
+    for i in range(1, len(thetas)):
+        theta_sum += thetas[i]
+        if abs(theta_sum) >= 30:
+            isStra = False
+            break
+    return isTurn, turnPoint, isStra
 
 
 ################# main function ###################
@@ -486,27 +472,51 @@ def calV_(theta):
     return max(max_v - (max_v - min_v) * k * theta, 0.01)
 
 
-def calV(theta):
-    theta = abs(theta) * 2
+def calV(theta, w):
+    theta = abs(theta) * 5
 
-    if theta <= 1:
-        return 3
-    elif theta <= 3:
-        return 2.5
+    v = 2
+
+    if theta <= 3:
+        v = 2
     elif theta <= 5:
-        return 2
+        v = 1.8
     elif theta <= 8:
-        return 1.5
+        v = 1.5
     elif theta <= 10:
-        return 1
+        v = 1.0
     elif theta <= 15:
-        return 0.7
+        v = 0.8
     elif theta <= 20:
-        return 0.5
+        v = 0.6
     elif theta <= 30:
-        return 0.2
+        v = 0.4
+    elif theta <= 40:
+        v = 0.2
     else:
-        return 0.1
+        v = 0.1
+    
+    # if abs(w) <= 0.00:
+    #     v = min(v, 2)
+    # elif theta <= 5:
+    #     v = min(v, 1.8)
+    # elif theta <= 8:
+    #     v = min(v, 1.5)
+    # elif theta <= 10:
+    #     v = min(v, 1.0)
+    # elif theta <= 15:
+    #     v = min(v, 0.8)
+    # elif theta <= 20:
+    #     v = min(v, 0.6)
+    # elif abs(w) <= 0.2:
+    #     v = min(v, 0.4)
+    # elif abs(w) <= 0.5:
+    #     v = min(v, 0.2)
+    # else:
+    #     v = 0.1
+
+
+    return v
 
 
 def simMove():
@@ -521,13 +531,20 @@ def main():
 
     print('initial finished')
 
-    pid_quick = pidController(kp=0.1, ki=0.00001, kd=0)
+    pid_quick = pidController(kp=0.1, ki=0, kd=0)
     pid_slow = pidController(kp=0.1, ki=0, kd=0)
-    pid = None
+    pid = pidController(kp=0.3, ki=0.000, kd=0.20)  # kp = 0.3  kd = 0.2
 
     ############### Initial ###############
     v = 0
     w = 0
+    pre_size = 5
+    pre_idx = 0
+    pre_controls = {
+        "w": [0]*pre_size,
+        "isTurn": [False]*pre_size,
+        "isStra": [False]*pre_size
+    }
     ############### Get Image ###############
 
     sim.simxSynchronousTrigger(clientID)
@@ -543,44 +560,55 @@ def main():
             img = np.array(image, dtype=np.uint8)
             img.resize([resolution[1], resolution[0], 3])
             img = handleGraph(img)
-
             cv2.imwrite("../Images/img.png", img)
 
             points, thetas = handleRoad(img)
-
             # printPoints(points)
 
             if points is None or thetas is None:
-                v = 0.01
-                w = 0.5
+                """
+                No road
+                """
+                v = 0.001
+                w = np.sign(sum(pre_controls["w"]) / pre_size) * 10
                 move(v, w)
                 print('v = ', v, 'w = ', w)
                 simMove()
                 continue
 
-            theta = calIndicator(points, thetas)
+            theta = calIndicator(points, thetas, v)
+            isTurn, turnPoint, isStra = analysis(points, thetas)
 
             if theta is None:
                 v = 0.01
-                w = 0.5
+                w = sum(pre_controls["w"]) / pre_size
                 move(v, w)
                 print('v = ', v, 'w = ', w)
                 simMove()
                 continue
 
-            v = 0.5
-
-            if v <= 0.5:
-                pid = pid_slow
-            else:
-                pid = pid_quick
-
             w = pid(theta)
-            # v = calV(theta)
-            print('theta = ', theta, 'v = ', v, 'w = ', w)
+            if abs(w) > 3:
+                w = np.sign(w) * 3
+
+            # if not isTurn and True in pre_controls["isTurn"]:
+            #     if min(pre_controls["turnPoint"]) <= 3:
+
+            v = calV(theta)
+            if isTurn and turnPoint <= 5:
+                v = min(v, 0.3)
+
+            print('theta = ', theta, 'v = ', v, 'w = ', w,
+                  'isTurn = ', isTurn, 'turnPoint = ', turnPoint)
+
+            # printPoints(points)
+
             move(v, w)
 
-            # break
+            pre_controls["w"][pre_idx] = w
+            pre_controls["isTurn"][pre_idx] = isTurn
+            pre_controls["isStra"][pre_idx] = isStra
+            pre_idx = (pre_idx + 1) % pre_size
 
             simMove()
 
