@@ -47,8 +47,11 @@ print(CalAngle((8, -13), (10, -10)))
 print(vector_delta_theta((380, 352), (367, 360), (357, 370)))
 
 
+def tranCoordinate(pos: Tuple):
+    return (pos[1], -pos[0])
+
 def azimuthAngle(pos1: Tuple, pos2: Tuple):
-    # pos1, pos2 = tranCoordinate(pos1), tranCoordinate(pos2)
+    pos1, pos2 = tranCoordinate(pos1), tranCoordinate(pos2)
     y1, x1 = pos1
     y2, x2 = pos2
 
@@ -65,6 +68,4 @@ def azimuthAngle(pos1: Tuple, pos2: Tuple):
     return np.rad2deg(angle)
 
 
-print(azimuthAngle((0, 0), (1, 2)))
-
-
+print(azimuthAngle((500, 320), (479, 348)))

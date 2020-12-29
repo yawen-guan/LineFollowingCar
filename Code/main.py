@@ -215,7 +215,7 @@ def azimuthAngle(pos1: Tuple, pos2: Tuple):
     if angle <= -math.pi:
         angle += 2.0 * math.pi
 
-    return - np.rad2deg(angle)
+    return np.rad2deg(angle)
 
 
 def distance(p0, p1):
@@ -379,13 +379,21 @@ def handleRoad(img):
 ############# Calculator Indicator ################
 
 
+def smoothList(ori):
+    lst = []
+    lst.append(ori[0])
+    for i in range(1, len(ori)):
+        lst.append((ori[i - 1] + ori[i]) / 2)
+    return lst
+
+
 def getThetasToCar(points, size):
-    # print('points', points, size)
     if len(points) < size:
         raise Exception("Points not enough.")
     car_thetas = []
-    car_pos = (rows, cols / 2)
+    car_pos = (rows + 20, cols / 2)
     for i in range(size):
+        # print('point = ', points[i], 'azimuthAngle = ', azimuthAngle(car_pos, points[i]))
         car_thetas.append(azimuthAngle(car_pos, points[i]))
     return car_thetas
 
@@ -399,51 +407,27 @@ def getAverageTheta(car_thetas, thetas, front_size, weights):
             weight_sum += weights[i] / 2
         theta_sum += thetas[i] * weights[i]
         weight_sum += weights[i]
-    print('')
-    print('car_thetas = ', car_thetas)
-    print('thetas = ', thetas)
-    print('weights = ', weights)
 
     if weight_sum == 0:
         return None
+
+    print('weights = ', weights)
+    print('theta = ', theta_sum / weight_sum)
+
     return theta_sum / weight_sum
-    # return correctAngle(theta_sum) / 2
 
 
 def generateWeights(size, v, front_size):
 
-    # for v in [0, 0.1, 0.2, 0.5, 1, 2, 3]:
-    #     print('v = ', v)
-
-    # weight =  -math.log10((i / size) + 1) + 1
-    # if i < front_size:
-    # weight += 1.5
-
     weights = []
     global max_v
 
-    k = 1
-    min_weight = None
-    max_weight = None
     for i in range(size):
-        # print('i/size = ', i/size, 'v/max_v = ', v/max_v)
-        weight = -0.0005 * (i/size - v/max_v) ** 2
+        weight = -math.log10((i / size) + 1) + 1
+        if i < front_size:
+            weight += 1.5
         weights.append(weight)
-        if min_weight is None or weight < min_weight:
-            min_weight = weight
-        if max_weight is None or weight > max_weight:
-            max_weight = weight
-    # print('weights = ', weights)
-    c = 0
-    if min_weight <= 0:
-        c = c - min_weight + (max_weight - min_weight) / 10
-    while abs(k * (min_weight + c)) < 1:
-        k *= 10
 
-    for i in range(size):
-        weights[i] = k * (weights[i] + c)
-
-        # print('v = ', v, 'weights = ', weights)
     return weights
 
 
@@ -453,6 +437,10 @@ def calIndicator(points, thetas, v):
         return None
     car_thetas = getThetasToCar(points, front_size)
     weights = generateWeights(len(thetas), v, front_size)
+    print('')
+    print('points = ', points)
+    print('thetas = ', thetas)
+    print('car_thetas = ', car_thetas)
     return getAverageTheta(car_thetas, thetas, front_size, weights)
 
 
@@ -461,19 +449,36 @@ def calIndicator(points, thetas, v):
 max_v = 3
 
 
-def calV(w):
-    # return max_v - ((max_v - 0.01) / 157.5) * theta
-    w = abs(w)
+# def calV(w):
+#     # return max_v - ((max_v - 0.01) / 157.5) * theta
+#     w = abs(w)
 
-    if w <= 15:
+#     if w <= 15:
+#         return 3
+#     elif w <= 30:
+#         return 2
+#     elif w <= 45:
+#         return 1
+#     elif w <= 60:
+#         return 0.5
+#     elif w <= 90:
+#         return 0.2
+#     else:
+#         return 0.1
+
+def calV(theta):
+    # return max_v - ((max_v - 0.01) / 157.5) * theta
+    theta = abs(theta)
+
+    if theta <= 15:
         return 3
-    elif w <= 30:
+    elif theta <= 30:
         return 2
-    elif w <= 45:
+    elif theta <= 45:
         return 1
-    elif w <= 60:
+    elif theta <= 60:
         return 0.5
-    elif w <= 90:
+    elif theta <= 90:
         return 0.2
     else:
         return 0.1
@@ -485,12 +490,10 @@ def simMove():
 
 
 def main():
-
     initRoad([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20])
 
-    # print("ok")
+    print('initial finished')
 
-    # pid_v = pidController(kp=0.3, ki=0, kd=0)
     pid, _ = pidController(kp=0.5, ki=0, kd=0)
 
     ############### Initial ###############
@@ -522,10 +525,6 @@ def main():
                 simMove()
                 continue
 
-            # print(len(points))
-            # print("points = ", points)
-            # printPoints(points)
-            # print('thetas = ', thetas)
             theta = calIndicator(points, thetas, v)
 
             if theta is None:
@@ -535,13 +534,8 @@ def main():
                 simMove()
                 continue
 
-            # theta = 2.5 * theta
-
             w = pid(theta)
-            if count == 1:
-                v = 0.5
-            else:
-                v = calV(w)
+            v = calV(theta)
             print('theta = ', theta, 'v = ', v, 'w = ', w)
             move(v, w)
 
@@ -554,7 +548,7 @@ def main():
 
         elif err == sim.simx_return_novalue_flag:
             pass
-            # print("Getting image: no image yet")
+            print("Getting image: no image yet")
         else:
             print("Gettimg image: error with code = ", err)
 
